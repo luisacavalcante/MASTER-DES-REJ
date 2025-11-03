@@ -326,7 +326,7 @@ def get_data(dataset:str):
         X_train_norm.loc[:,nmrc_cols] = scaler.fit_transform(X_train_norm[nmrc_cols])
         X_test_norm.loc[:,nmrc_cols] = scaler.transform(X_test_norm[nmrc_cols])
 
-    elif(dataset=='inadiplence'):
+    elif(dataset=='heloc'):
         df = pd.read_csv('data/heloc_dataset_v1 (1).csv')
 
         X, y = df.drop(columns=['RiskPerformance']), df['RiskPerformance'].replace({'Bad':0, 'Good':1}).astype(int)
