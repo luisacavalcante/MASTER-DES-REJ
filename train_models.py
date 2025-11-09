@@ -82,7 +82,6 @@ def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test
             else:
                 auroc = None
         except Exception as e:
-            #print(f"Aviso: Não foi possível calcular AUROC para {model_name}: {e}")
             auroc = None
         
         # Calcular métricas
@@ -108,18 +107,7 @@ def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test
             mlflow.log_metric("auroc", auroc)
         
         # Registrar modelo
-        mlflow.sklearn.log_model(model, name=model_name)
-        
-        #print(f"\n{'='*60}")
-        #print(f"Modelo: {model_name}")
-        #print(f"{'='*60}")
-        #print(f"Acurácia:  {accuracy:.4f}")
-        #print(f"Precisão:  {precision:.4f}")
-        #print(f"Recall:    {recall:.4f}")
-        #print(f"F1-Score:  {f1:.4f}")
-        #if auroc is not None:
-            #print(f"AUROC:     {auroc:.4f}")
-        #print(f"{'='*60}\n")
+        mlflow.sklearn.loaded_models[''](model, name=model_name)
         
         return model
     
@@ -161,7 +149,7 @@ def load_model_by_name(experiment_name, run_name):
     print(run_id)
     # Carregar modelo
     model_uri = f"runs:/{run_id}/{run_name}"
-    model = mlflow.sklearn.load_model(model_uri)
+    model = mlflow.sklearn.loaded_models[''](model_uri)
     
     # Extrair informações da run
     run_info = {
@@ -172,11 +160,7 @@ def load_model_by_name(experiment_name, run_name):
         'metrics': {k.replace('metrics.', ''): v for k, v in run.items() if k.startswith('metrics.')}
     }
     
-    #print(f"✓ Modelo '{run_name}' carregado com sucesso!")
-    #print(f"  Run ID: {run_id}")
-    ##print(f"  Métricas: F1={run_info['metrics'].get('f1_score', 'N/A'):.4f}")
-    
-    return model, run_info
+    return model#, run_info
 
 # ======================================================
 
@@ -673,178 +657,156 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
 
     # ============================================
 
+    loaded_models = {}
+
     # 3. Create a study object and optimize the objective function.
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='Decision_Tree')
+        loaded_models['Decision_Tree'] = load_model_by_name(experiment_name=experiment_name, run_name='Decision_Tree')
     except ValueError:
         dtree_study = optuna.create_study(direction='maximize')
         dtree_study.optimize(dtree_objective, n_trials=num_trials)
-        #print(dtree_study.best_trial)
-
         dtree_params = dtree_study.best_params
-        dtree_model = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED'])
-        dtree_model = log_model_to_mlflow(
-            dtree_model, "Decision_Tree", dtree_params, 
+        loaded_models['Decision_Tree'] = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED'])
+        loaded_models['Decision_Tree'] = log_model_to_mlflow(
+            loaded_models['Decision_Tree'], "Decision_Tree", dtree_params, 
             X_train, y_train, X_test, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='SGD')
+        loaded_models['SGD'] = load_model_by_name(experiment_name=experiment_name, run_name='SGD')
     except ValueError:
         sgd_study = optuna.create_study(direction='maximize')
         sgd_study.optimize(sgd_objective, n_trials=num_trials)
-        #print("SGD Best Trial:", sgd_study.best_trial)
         sgd_params = sgd_study.best_params
-        sgd_model = SGDClassifier(**sgd_params, random_state=CONFIG['SEED'])
-        sgd_model = log_model_to_mlflow(
-            sgd_model, "SGD", sgd_params,
+        loaded_models['SGD'] = SGDClassifier(**sgd_params, random_state=CONFIG['SEED'])
+        loaded_models['SGD'] = log_model_to_mlflow(
+            loaded_models['SGD'], "SGD", sgd_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='Logistic_Regression')
+        loaded_models['Logistic_Regression'] = load_model_by_name(experiment_name=experiment_name, run_name='Logistic_Regression')
     except ValueError:
         logreg_study = optuna.create_study(direction='maximize')
         logreg_study.optimize(logreg_objective, n_trials=num_trials)
-        #print("Logistic Regression Best Trial:", logreg_study.best_trial)
         logreg_params = logreg_study.best_params
-        logreg_model = LogisticRegression(**logreg_params, random_state=CONFIG['SEED'])
-        logreg_model = log_model_to_mlflow(
-            logreg_model, "Logistic_Regression", logreg_params,
+        loaded_models['Logistic_Regression'] = LogisticRegression(**logreg_params, random_state=CONFIG['SEED'])
+        loaded_models['Logistic_Regression'] = log_model_to_mlflow(
+            loaded_models['Logistic_Regression'], "Logistic_Regression", logreg_params,
             X_train, y_train, X_test_norm, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='KNN')
+        loaded_models['KNN'] = load_model_by_name(experiment_name=experiment_name, run_name='KNN')
     except ValueError:
         knn_study = optuna.create_study(direction='maximize')
         knn_study.optimize(knn_objective, n_trials=num_trials)
-        #print("KNN Best Trial:", knn_study.best_trial)
         knn_params = knn_study.best_params
-        knn_model = KNeighborsClassifier(**knn_params)
-        knn_model = log_model_to_mlflow(
-            knn_model, "KNN", knn_params,
+        loaded_models['KNN'] = KNeighborsClassifier(**knn_params)
+        loaded_models['KNN'] = log_model_to_mlflow(
+            loaded_models['KNN'], "KNN", knn_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Linear')
+        loaded_models['SVM_Linear'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Linear')
     except ValueError:
         svm_linear_study = optuna.create_study(direction='maximize')
         svm_linear_study.optimize(svm_linear_objective, n_trials=num_trials)
-        #print("SVM Linear Best Trial:", svm_linear_study.best_trial)
         svm_linear_params = svm_linear_study.best_params
-        svm_linear_model = SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True)
-        svm_linear_model = log_model_to_mlflow(
-            svm_linear_model, "SVM_Linear", svm_linear_params,
+        loaded_models['SVM_Linear'] = SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True)
+        loaded_models['SVM_Linear'] = log_model_to_mlflow(
+            loaded_models['SVM_Linear'], "SVM_Linear", svm_linear_params,
             X_train, y_train, X_test_norm, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Polynomial')
+        loaded_models['SVM_Polynomial'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Polynomial')
     except ValueError:
         svm_poly_study = optuna.create_study(direction='maximize')
         svm_poly_study.optimize(svm_poly_objective, n_trials=num_trials)
-        #print("SVM Poly Best Trial:", svm_poly_study.best_trial)
         svm_poly_params = svm_poly_study.best_params
-        svm_poly_model = SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True)
-        svm_poly_model = log_model_to_mlflow(
-            svm_poly_model, "SVM_Polynomial", svm_poly_params,
+        loaded_models['SVM_Polynomial'] = SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True)
+        loaded_models['SVM_Polynomial'] = log_model_to_mlflow(
+            loaded_models['SVM_Polynomial'], "SVM_Polynomial", svm_poly_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='SVM_RBF')
+        loaded_models['SVM_RBF'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_RBF')
     except ValueError:
         svm_rbf_study = optuna.create_study(direction='maximize')
         svm_rbf_study.optimize(svm_rbf_objective, n_trials=num_trials)
-        #print("SVM RBF Best Trial:", svm_rbf_study.best_trial)
         svm_rbf_params = svm_rbf_study.best_params
-        svm_rbf_model = SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True)
-        svm_rbf_model = log_model_to_mlflow(
-            svm_rbf_model, "SVM_RBF", svm_rbf_params,
+        loaded_models['SVM_RBF'] = SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True)
+        loaded_models['SVM_RBF'] = log_model_to_mlflow(
+            loaded_models['SVM_RBF'], "SVM_RBF", svm_rbf_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='MLP')
+        loaded_models['MLP'] = load_model_by_name(experiment_name=experiment_name, run_name='MLP')
     except ValueError:
         mlp_study = optuna.create_study(direction='maximize')
         mlp_study.optimize(mlp_objective, n_trials=num_trials)
-        #print("MLP Best Trial:", mlp_study.best_trial)
         mlp_params = mlp_study.best_params
         mlp_params['hidden_layer_sizes'] = (mlp_params['hidden_layer_sizes'],)
-        mlp_model = MLPClassifier(**mlp_params, random_state=CONFIG['SEED'])
-        mlp_model = log_model_to_mlflow(
-            mlp_model, "MLP", mlp_params,
+        loaded_models['MLP'] = MLPClassifier(**mlp_params, random_state=CONFIG['SEED'])
+        loaded_models['MLP'] = log_model_to_mlflow(
+            loaded_models['MLP'], "MLP", mlp_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='Random_Forest')
+        loaded_models['Random_Forest'] = load_model_by_name(experiment_name=experiment_name, run_name='Random_Forest')
     except ValueError:
         rf_study = optuna.create_study(direction='maximize')
         rf_study.optimize(rf_objective, n_trials=num_trials)
-        #print("Random Forest Best Trial:", rf_study.best_trial)
         rf_params = rf_study.best_params
-        rf_model = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1)
-        rf_model = log_model_to_mlflow(
-            rf_model, "Random_Forest", rf_params,
+        loaded_models['Random_Forest'] = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1)
+        loaded_models['Random_Forest'] = log_model_to_mlflow(
+            loaded_models['Random_Forest'], "Random_Forest", rf_params,
             X_train, y_train, X_test, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='Gradient_Boosting')
+        loaded_models['Gradient_Boosting'] = load_model_by_name(experiment_name=experiment_name, run_name='Gradient_Boosting')
     except ValueError:
         gb_study = optuna.create_study(direction='maximize')
         gb_study.optimize(gb_objective, n_trials=num_trials)
-        #print("Gradient Boosting Best Trial:", gb_study.best_trial)
         gb_params = gb_study.best_params
-        gb_model = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED'])
-        gb_model = log_model_to_mlflow(
-            gb_model, "Gradient_Boosting", gb_params,
+        loaded_models['Gradient_Boosting'] = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED'])
+        loaded_models['Gradient_Boosting'] = log_model_to_mlflow(
+            loaded_models['Gradient_Boosting'], "Gradient_Boosting", gb_params,
             X_train, y_train, X_test, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='AdaBoost')
+        loaded_models['AdaBoost'] = load_model_by_name(experiment_name=experiment_name, run_name='AdaBoost')
     except ValueError:
         ada_study = optuna.create_study(direction='maximize')
         ada_study.optimize(ada_objective, n_trials=num_trials)
-        #print("AdaBoost Best Trial:", ada_study.best_trial)
         ada_params = ada_study.best_params
-        ada_model = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED'])
-        ada_model = log_model_to_mlflow(
-            ada_model, "AdaBoost", ada_params,
+        loaded_models['AdaBoost'] = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED'])
+        loaded_models['AdaBoost'] = log_model_to_mlflow(
+            loaded_models['AdaBoost'], "AdaBoost", ada_params,
             X_train, y_train, X_test, y_test
         )
 
     try:
-        _ = load_model_by_name(experiment_name=experiment_name, run_name='XGBoost')
+        loaded_models['XGBoost'] = load_model_by_name(experiment_name=experiment_name, run_name='XGBoost')
     except ValueError:
         xgb_study = optuna.create_study(direction='maximize')
         xgb_study.optimize(xgb_objective, n_trials=num_trials)
-        #print("XGBoost Best Trial:", xgb_study.best_trial)
         xgb_params = xgb_study.best_params
-        xgb_model = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True)
-        xgb_model = log_model_to_mlflow(
-            xgb_model, "XGBoost", xgb_params,
+        loaded_models['XGBoost'] = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True)
+        loaded_models['XGBoost'] = log_model_to_mlflow(
+            loaded_models['XGBoost'], "XGBoost", xgb_params,
             X_train, y_train, X_test, y_test
         )
 
     if(load):
-        return {'Decision_Tree': dtree_model,
-                'SGD': sgd_model,
-                'Logistic_Regression': logreg_model,
-                'KNN':knn_model,
-                'SVM_Linear':svm_linear_model,
-                'SVM_Polynomial':svm_poly_model,
-                'SVM_RBF':svm_rbf_model,
-                'MLP':mlp_model,
-                'Random_Forest':rf_model,
-                'Grandient_Boosting':gb_model,
-                'AdaBoost':ada_model,
-                'XGBoost':xgb_model}
+        return loaded_models
 
 def getExpName(dataset):
     global CONFIG
