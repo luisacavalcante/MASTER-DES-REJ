@@ -6,6 +6,8 @@ import mlflow
 import mlflow.sklearn
 import optuna
 #import logging
+from sklearn.pipeline import Pipeline
+from classes import SpecificScaler
 from sklearn.datasets import make_moons, make_circles, make_blobs
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
@@ -39,6 +41,26 @@ with open('config.json', 'r') as f:
 
 # ==================================================
 
+def auroc_score(model, x, y):
+    try:
+        if hasattr(model, 'predict_proba'):
+            y_proba = model.predict_proba(x)
+            # Para classificação binária
+            if y_proba.shape[1] == 2:
+                auroc = roc_auc_score(y, y_proba[:, 1])
+            # Para classificação multiclasse
+            else:
+                auroc = roc_auc_score(y, y_proba)
+        elif hasattr(model, 'decision_function'):
+            y_scores = model.decision_function(x)
+            auroc = roc_auc_score(y, y_scores)
+        else:
+            auroc = None
+    except Exception as e:
+        auroc = None
+    return auroc
+    
+
 def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test, y_test):
     """
     Treina, avalia e registra um modelo no MLflow.
@@ -57,57 +79,54 @@ def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test
         Dados de teste
     """
     with mlflow.start_run(run_name=model_name):
-        # Treinar modelo
-        model.fit(X_train, y_train)
-        
         # Fazer predições
-        y_pred = model.predict(X_test)
+        y_pred_train = model.predict(X_train)
+        y_pred_test = model.predict(X_test)
         
         # Calcular probabilidades para AUROC (se disponível)
-        try:
-            if hasattr(model, 'predict_proba'):
-                y_proba = model.predict_proba(X_test)
-                # Para classificação binária
-                if y_proba.shape[1] == 2:
-                    auroc = roc_auc_score(y_test, y_proba[:, 1])
-                # Para classificação multiclasse
-                else:
-                    auroc = roc_auc_score(y_test, y_proba)
-            elif hasattr(model, 'decision_function'):
-                y_scores = model.decision_function(X_test)
-                if len(np.unique(y_test)) == 2:
-                    auroc = roc_auc_score(y_test, y_scores)
-                else:
-                    auroc = roc_auc_score(y_test, y_scores)
-            else:
-                auroc = None
-        except Exception as e:
-            auroc = None
+        train_auroc = auroc_score(model, X_train, y_train)
+        test_auroc = auroc_score(model, X_test, y_test)
         
         # Calcular métricas
-        accuracy = accuracy_score(y_test, y_pred)
-        if(len(set(y_test)) > 2):
-            precision = precision_score(y_test, y_pred, zero_division=0, average='macro')
-            recall = recall_score(y_test, y_pred, zero_division=0, average='macro')
-            f1 = f1_score(y_test, y_pred, zero_division=0, average='macro')
+        train_accuracy = accuracy_score(y_train, y_pred_train)
+        if(len(set(y_train)) > 2):
+            train_precision = precision_score(y_train, y_pred_train, zero_division=0, average='macro')
+            train_recall = recall_score(y_train, y_pred_train, zero_division=0, average='macro')
+            train_f1 = f1_score(y_train, y_pred_train, zero_division=0, average='macro')
         else:
-            precision = precision_score(y_test, y_pred, zero_division=0)
-            recall = recall_score(y_test, y_pred, zero_division=0)
-            f1 = f1_score(y_test, y_pred, zero_division=0)
+            train_precision = precision_score(y_train, y_pred_train, zero_division=0)
+            train_recall = recall_score(y_train, y_pred_train, zero_division=0)
+            train_f1 = f1_score(y_train, y_pred_train, zero_division=0)
+        
+        test_accuracy = accuracy_score(y_test, y_pred_test)
+        if(len(set(y_test)) > 2):
+            test_precision = precision_score(y_test, y_pred_test, zero_division=0, average='macro')
+            test_recall = recall_score(y_test, y_pred_test, zero_division=0, average='macro')
+            test_f1 = f1_score(y_test, y_pred_test, zero_division=0, average='macro')
+        else:
+            test_precision = precision_score(y_test, y_pred_test, zero_division=0)
+            test_recall = recall_score(y_test, y_pred_test, zero_division=0)
+            test_f1 = f1_score(y_test, y_pred_test, zero_division=0)
         
         # Registrar hiperparâmetros
         mlflow.log_params(hyperparams)
         
         # Registrar métricas
-        mlflow.log_metric("accuracy", accuracy)
-        mlflow.log_metric("precision", precision)
-        mlflow.log_metric("recall", recall)
-        mlflow.log_metric("f1_score", f1)
-        if auroc is not None:
-            mlflow.log_metric("auroc", auroc)
+        mlflow.log_metric("train_accuracy", train_accuracy)
+        mlflow.log_metric("train_precision", train_precision)
+        mlflow.log_metric("train_recall", train_recall)
+        mlflow.log_metric("train_f1_score", train_f1)
+        mlflow.log_metric("test_accuracy", test_accuracy)
+        mlflow.log_metric("test_precision", test_precision)
+        mlflow.log_metric("test_recall", test_recall)
+        mlflow.log_metric("test_f1_score", test_f1)
+        if train_auroc is not None:
+            mlflow.log_metric("train_auroc", train_auroc)
+        if test_auroc is not None:
+            mlflow.log_metric("test_auroc", test_auroc)
         
         # Registrar modelo
-        mlflow.sklearn.loaded_models[''](model, name=model_name)
+        mlflow.sklearn.log_model(model, name=model_name)
         
         return model
     
@@ -149,18 +168,15 @@ def load_model_by_name(experiment_name, run_name):
     print(run_id)
     # Carregar modelo
     model_uri = f"runs:/{run_id}/{run_name}"
-    model = mlflow.sklearn.loaded_models[''](model_uri)
+    model = mlflow.sklearn.load_model(model_uri)
     
     # Extrair informações da run
     run_info = {
-        'run_id': run_id,
-        'run_name': run_name,
-        'start_time': run.start_time,
         'params': {k.replace('params.', ''): v for k, v in run.items() if k.startswith('params.')},
         'metrics': {k.replace('metrics.', ''): v for k, v in run.items() if k.startswith('metrics.')}
     }
     
-    return model#, run_info
+    return model, run_info
 
 # ======================================================
 
@@ -180,7 +196,6 @@ def transform_property(x):
 def get_data(dataset:str):
     global CONFIG
     if(dataset in ['twomoons','circles','aniso','blobs','varied']):
-        scaler = StandardScaler()
         if(dataset=='twomoons'):
             X, y = make_moons(n_samples=CONFIG['TWO_MOONS']['N_SAMPLES'], 
                             noise=CONFIG['TWO_MOONS']['NOISE'],
@@ -209,8 +224,7 @@ def get_data(dataset:str):
             
         #df = pd.DataFrame(dict(x0=X[:,0], x1=X[:,1], label=y))
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, shuffle=True, random_state=CONFIG['SEED'])
-        X_train_norm = scaler.fit_transform(X_train)
-        X_test_norm = scaler.transform(X_test)
+        scaler = SpecificScaler().fit(X_train)
 
     elif(dataset=='covid'):
         df_covid = pd.read_csv('data/hosp1_v8 (1).csv') # 526 exemplos
@@ -220,14 +234,10 @@ def get_data(dataset:str):
                                                                         'troponina.i.plasma.troponina.i']) # 134 exemplos
         X_test, y_test = df_covid.drop(columns=['severity']), df_covid['severity']
 
-        scaler = StandardScaler()
         nmrc_cols = X_train.columns[1:]
-        X_train_norm = X_train.copy()
-        X_test_norm = X_test.copy()
-        X_train_norm.loc[:,nmrc_cols] = scaler.fit_transform(X_train_norm[nmrc_cols])
-        X_test_norm.loc[:,nmrc_cols] = scaler.transform(X_test_norm[nmrc_cols])
+        scaler = SpecificScaler().fit(X_train, nmrc_cols)
 
-        return X_train, X_train_norm, X_test, X_test_norm, y_train, y_test
+        return X_train, X_test, y_train, y_test, scaler
 
     elif(dataset=='airbnb'):
         df = pd.read_csv('data/listings.csv')
@@ -293,13 +303,9 @@ def get_data(dataset:str):
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, shuffle=True, random_state=CONFIG['SEED'])
 
         onehot = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
-        scaler = StandardScaler() 
         onehot = onehot.set_output(transform='pandas')
         X_train = pd.concat([X_train.drop(columns=['property_type','room_type','bathroom_type']), onehot.fit_transform(X_train[['property_type','room_type','bathroom_type']], y_train)], axis=1)
         X_test = pd.concat([X_test.drop(columns=['property_type','room_type','bathroom_type']), onehot.transform(X_test[['property_type','room_type','bathroom_type']])], axis=1)
-
-        X_train_norm = X_train.copy()
-        X_test_norm = X_test.copy()
 
         nmrc_cols = ['host_response_time','host_response_rate','host_total_listings_count',
                     'latitude','longitude','accommodates','bathrooms','bedrooms','beds',
@@ -307,8 +313,7 @@ def get_data(dataset:str):
                     'review_scores_communication','review_scores_location',
                     'minimum_nights','maximum_nights','availability_30']
 
-        X_train_norm.loc[:,nmrc_cols] = scaler.fit_transform(X_train_norm[nmrc_cols])
-        X_test_norm.loc[:,nmrc_cols] = scaler.transform(X_test_norm[nmrc_cols])
+        scaler = SpecificScaler().fit(X_train, nmrc_cols)
 
     elif(dataset=='heloc'):
         df = pd.read_csv('data/heloc_dataset_v1 (1).csv')
@@ -317,9 +322,7 @@ def get_data(dataset:str):
 
         X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=CONFIG['SEED'], shuffle=True)
 
-        scaler = StandardScaler() 
-        X_train_norm = scaler.fit_transform(X_train.copy())
-        X_test_norm = scaler.transform(X_test.copy())
+        scaler = StandardScaler().fit(X_train)
 
     #elif(dataset=='machinefailure'):
     #    df = df.drop(columns=['UDI','Product ID'])
@@ -365,9 +368,7 @@ def get_data(dataset:str):
                     'Hillshade_9am', 'Hillshade_Noon', 'Hillshade_3pm',
                     'Horizontal_Distance_To_Fire_Points']
         
-        scaler = StandardScaler()
-        X_train_norm.loc[:,nmrc_cols] = scaler.fit_transform(X_train_norm[nmrc_cols])
-        X_test_norm.loc[:,nmrc_cols] = scaler.transform(X_test_norm[nmrc_cols])
+        scaler = StandardScaler().fit(X_train, nmrc_cols)
 
     elif(dataset=='churn'):
         df = pd.read_csv(f'data/customer_churn_telecom_services.csv', header=0)
@@ -430,25 +431,17 @@ def get_data(dataset:str):
         y_test = pd.concat([test_pos['target'], test_neg['target']], ignore_index=True)
 
         # Normalização baseada no conjunto de treinamento
-        scaler1 = StandardScaler()
-
-        X_train_norm = X_train.copy()
-        X_train_norm.loc[:,continuous_cols] = scaler1.fit_transform(X_train_norm.loc[:,continuous_cols], y_train)
-
-        # Normalização nos conjuntos de validação e teste, com base nos dados de treinamento
-        X_test_norm = X_test.copy()
-        X_test_norm.loc[:,continuous_cols] = scaler1.transform(X_test_norm.loc[:,continuous_cols])
+        scaler = SpecificScaler().fit(X_train_norm, continuous_cols)
 
         # Balanceamento no conjunto de treinamento
         o_sampler = RandomOverSampler(random_state=CONFIG['SEED'])
 
-        X_train_norm, _ = o_sampler.fit_resample(X_train_norm, y_train) #yb_train == yb_train_norm
         X_train, y_train = o_sampler.fit_resample(X_train, y_train)
 
     else:
         raise ValueError('Dataset Not Usable')
     
-    return X_train, X_train_norm, X_test, X_test_norm, y_train, y_test
+    return X_train, X_test, y_train, y_test, scaler
 
 # ======================================================
 
@@ -456,7 +449,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
 
     mlflow.set_experiment(experiment_name=experiment_name)
 
-    X_train, X_train_norm, X_test, X_test_norm, y_train, y_test = get_data(dataset)
+    X_train, X_test, y_train, y_test, scaler = get_data(dataset)
+    X_train_norm = scaler.transform(X_train)
+    X_test_norm = scaler.transform(X_test)
 
     scorer_string = 'f1_macro' if len(set(y_train))>2 else 'f1'
 
@@ -661,145 +656,166 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
 
     # 3. Create a study object and optimize the objective function.
     try:
-        loaded_models['Decision_Tree'] = load_model_by_name(experiment_name=experiment_name, run_name='Decision_Tree')
+        loaded_models['Decision_Tree'] = load_model_by_name(experiment_name=experiment_name, run_name='Decision_Tree')[0]
     except ValueError:
         dtree_study = optuna.create_study(direction='maximize')
         dtree_study.optimize(dtree_objective, n_trials=num_trials)
         dtree_params = dtree_study.best_params
-        loaded_models['Decision_Tree'] = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED'])
+        loaded_models['Decision_Tree'] = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
         loaded_models['Decision_Tree'] = log_model_to_mlflow(
             loaded_models['Decision_Tree'], "Decision_Tree", dtree_params, 
             X_train, y_train, X_test, y_test
         )
 
     try:
-        loaded_models['SGD'] = load_model_by_name(experiment_name=experiment_name, run_name='SGD')
+        loaded_models['SGD'] = load_model_by_name(experiment_name=experiment_name, run_name='SGD')[0]
     except ValueError:
         sgd_study = optuna.create_study(direction='maximize')
         sgd_study.optimize(sgd_objective, n_trials=num_trials)
         sgd_params = sgd_study.best_params
-        loaded_models['SGD'] = SGDClassifier(**sgd_params, random_state=CONFIG['SEED'])
+        loaded_models['SGD'] = Pipeline([
+            ('scaler', scaler),
+            ('clf', SGDClassifier(**sgd_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
+        ])
         loaded_models['SGD'] = log_model_to_mlflow(
             loaded_models['SGD'], "SGD", sgd_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        loaded_models['Logistic_Regression'] = load_model_by_name(experiment_name=experiment_name, run_name='Logistic_Regression')
+        loaded_models['Logistic_Regression'] = load_model_by_name(experiment_name=experiment_name, run_name='Logistic_Regression')[0]
     except ValueError:
         logreg_study = optuna.create_study(direction='maximize')
         logreg_study.optimize(logreg_objective, n_trials=num_trials)
         logreg_params = logreg_study.best_params
-        loaded_models['Logistic_Regression'] = LogisticRegression(**logreg_params, random_state=CONFIG['SEED'])
+        loaded_models['Logistic_Regression'] = Pipeline([
+            ('scaler', scaler),
+            ('clf', LogisticRegression(**logreg_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
+        ])
         loaded_models['Logistic_Regression'] = log_model_to_mlflow(
             loaded_models['Logistic_Regression'], "Logistic_Regression", logreg_params,
             X_train, y_train, X_test_norm, y_test
         )
 
     try:
-        loaded_models['KNN'] = load_model_by_name(experiment_name=experiment_name, run_name='KNN')
+        loaded_models['KNN'] = load_model_by_name(experiment_name=experiment_name, run_name='KNN')[0]
     except ValueError:
         knn_study = optuna.create_study(direction='maximize')
         knn_study.optimize(knn_objective, n_trials=num_trials)
         knn_params = knn_study.best_params
-        loaded_models['KNN'] = KNeighborsClassifier(**knn_params)
+        loaded_models['KNN'] = Pipeline([
+            ('scaler', scaler),
+            ('clf', KNeighborsClassifier(**knn_params).fit(X_train_norm, y_train))
+        ])
         loaded_models['KNN'] = log_model_to_mlflow(
             loaded_models['KNN'], "KNN", knn_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        loaded_models['SVM_Linear'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Linear')
+        loaded_models['SVM_Linear'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Linear')[0]
     except ValueError:
         svm_linear_study = optuna.create_study(direction='maximize')
         svm_linear_study.optimize(svm_linear_objective, n_trials=num_trials)
         svm_linear_params = svm_linear_study.best_params
-        loaded_models['SVM_Linear'] = SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True)
+        loaded_models['SVM_Linear'] = Pipeline([
+            ('scaler', scaler),
+            ('clf', SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
+        ])
         loaded_models['SVM_Linear'] = log_model_to_mlflow(
             loaded_models['SVM_Linear'], "SVM_Linear", svm_linear_params,
             X_train, y_train, X_test_norm, y_test
         )
 
     try:
-        loaded_models['SVM_Polynomial'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Polynomial')
+        loaded_models['SVM_Polynomial'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Polynomial')[0]
     except ValueError:
         svm_poly_study = optuna.create_study(direction='maximize')
         svm_poly_study.optimize(svm_poly_objective, n_trials=num_trials)
         svm_poly_params = svm_poly_study.best_params
-        loaded_models['SVM_Polynomial'] = SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True)
+        loaded_models['SVM_Polynomial'] = Pipeline([
+            ('scaler', scaler),
+            ('clf', SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
+        ])
         loaded_models['SVM_Polynomial'] = log_model_to_mlflow(
             loaded_models['SVM_Polynomial'], "SVM_Polynomial", svm_poly_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        loaded_models['SVM_RBF'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_RBF')
+        loaded_models['SVM_RBF'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_RBF')[0]
     except ValueError:
         svm_rbf_study = optuna.create_study(direction='maximize')
         svm_rbf_study.optimize(svm_rbf_objective, n_trials=num_trials)
         svm_rbf_params = svm_rbf_study.best_params
-        loaded_models['SVM_RBF'] = SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True)
+        loaded_models['SVM_RBF'] = Pipeline([
+            ('scaler', scaler),
+            ('clf', SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
+        ])
         loaded_models['SVM_RBF'] = log_model_to_mlflow(
             loaded_models['SVM_RBF'], "SVM_RBF", svm_rbf_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        loaded_models['MLP'] = load_model_by_name(experiment_name=experiment_name, run_name='MLP')
+        loaded_models['MLP'] = load_model_by_name(experiment_name=experiment_name, run_name='MLP')[0]
     except ValueError:
         mlp_study = optuna.create_study(direction='maximize')
         mlp_study.optimize(mlp_objective, n_trials=num_trials)
         mlp_params = mlp_study.best_params
         mlp_params['hidden_layer_sizes'] = (mlp_params['hidden_layer_sizes'],)
-        loaded_models['MLP'] = MLPClassifier(**mlp_params, random_state=CONFIG['SEED'])
+        loaded_models['MLP'] = Pipeline([
+            ('scaler', scaler),
+            ('clf', MLPClassifier(**mlp_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
+        ])
         loaded_models['MLP'] = log_model_to_mlflow(
             loaded_models['MLP'], "MLP", mlp_params,
             X_train_norm, y_train, X_test_norm, y_test
         )
 
     try:
-        loaded_models['Random_Forest'] = load_model_by_name(experiment_name=experiment_name, run_name='Random_Forest')
+        loaded_models['Random_Forest'] = load_model_by_name(experiment_name=experiment_name, run_name='Random_Forest')[0]
     except ValueError:
         rf_study = optuna.create_study(direction='maximize')
         rf_study.optimize(rf_objective, n_trials=num_trials)
         rf_params = rf_study.best_params
-        loaded_models['Random_Forest'] = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1)
+        loaded_models['Random_Forest'] = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1).fit(X_train, y_train)
         loaded_models['Random_Forest'] = log_model_to_mlflow(
             loaded_models['Random_Forest'], "Random_Forest", rf_params,
             X_train, y_train, X_test, y_test
         )
 
     try:
-        loaded_models['Gradient_Boosting'] = load_model_by_name(experiment_name=experiment_name, run_name='Gradient_Boosting')
+        loaded_models['Gradient_Boosting'] = load_model_by_name(experiment_name=experiment_name, run_name='Gradient_Boosting')[0]
     except ValueError:
         gb_study = optuna.create_study(direction='maximize')
         gb_study.optimize(gb_objective, n_trials=num_trials)
         gb_params = gb_study.best_params
-        loaded_models['Gradient_Boosting'] = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED'])
+        loaded_models['Gradient_Boosting'] = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
         loaded_models['Gradient_Boosting'] = log_model_to_mlflow(
             loaded_models['Gradient_Boosting'], "Gradient_Boosting", gb_params,
             X_train, y_train, X_test, y_test
         )
 
     try:
-        loaded_models['AdaBoost'] = load_model_by_name(experiment_name=experiment_name, run_name='AdaBoost')
+        loaded_models['AdaBoost'] = load_model_by_name(experiment_name=experiment_name, run_name='AdaBoost')[0]
     except ValueError:
         ada_study = optuna.create_study(direction='maximize')
         ada_study.optimize(ada_objective, n_trials=num_trials)
         ada_params = ada_study.best_params
-        loaded_models['AdaBoost'] = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED'])
+        loaded_models['AdaBoost'] = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
         loaded_models['AdaBoost'] = log_model_to_mlflow(
             loaded_models['AdaBoost'], "AdaBoost", ada_params,
             X_train, y_train, X_test, y_test
         )
 
     try:
-        loaded_models['XGBoost'] = load_model_by_name(experiment_name=experiment_name, run_name='XGBoost')
+        loaded_models['XGBoost'] = load_model_by_name(experiment_name=experiment_name, run_name='XGBoost')[0]
     except ValueError:
         xgb_study = optuna.create_study(direction='maximize')
         xgb_study.optimize(xgb_objective, n_trials=num_trials)
         xgb_params = xgb_study.best_params
-        loaded_models['XGBoost'] = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True)
+        loaded_models['XGBoost'] = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True).fit(X_train, y_train)
         loaded_models['XGBoost'] = log_model_to_mlflow(
             loaded_models['XGBoost'], "XGBoost", xgb_params,
             X_train, y_train, X_test, y_test
@@ -816,7 +832,7 @@ def getExpName(dataset):
 if(__name__=='__main__'):
     NUM_TRIALS = 20
     #DATASET = 'circles'
-    for DATASET in ['covertype']:
+    for DATASET in ['airbnb','covertype','heloc','churn']:
         experiment_name = getExpName(DATASET)
 
         searchAndTrain(dataset=DATASET, 
