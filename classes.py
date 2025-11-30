@@ -21,19 +21,20 @@ class SpecificScaler(StandardScaler):
 
     def fit(self, X:pd.DataFrame, features:list=None):
         '''Fit the scaler on specific columns of data'''
-        X = self._prep_data(X, features)
+        X = self._prep_data(X.copy(), features)
         super().fit(X.loc[:,self.features])
         return self
 
     def fit_transform(self, X:pd.DataFrame, features:list=None):
         '''Fit the scaler on specific columns of data and transform it'''
-        X = self._prep_data(X, features)
+        X = self._prep_data(X.copy(), features)
         X.loc[:,self.features] = super().fit_transform(X.loc[:,self.features])
 
         return X
 
     def transform(self, X:pd.DataFrame):
         '''Use the fitted scaler to transform specific columns of data'''
+        X = X.copy()
         if(not isinstance(X, pd.DataFrame)):
             X = pd.DataFrame(X)
         X.loc[:,self.features] = super().transform(X.loc[:,self.features])
@@ -64,12 +65,9 @@ class Pool:
         return self
 
     def predict(self, X) -> pd.DataFrame:
-        if(isinstance(X, pd.DataFrame)):
-            X = X.to_numpy()
-        
         pred = pd.DataFrame(columns=list(self.predictors.keys()))
         
-        if((self.cache_input_pred is not None) and (X.shape == self.cache_input_pred.shape) and (X == self.cache_input_pred).all()):
+        if((self.cache_input_pred is not None) and (X.shape == self.cache_input_pred.shape) and (X == self.cache_input_pred).all().all()):
             pred = self.cache_output_pred
         else:
             for name, model in self.predictors.items():
@@ -80,12 +78,9 @@ class Pool:
         return pred
 
     def predict_proba(self, X) -> dict:
-        if(isinstance(X, pd.DataFrame)):
-            X = X.to_numpy()
-        
         pred = {}
         
-        if((self.cache_input_proba is not None) and (X.shape == self.cache_input_proba.shape) and (X == self.cache_input_proba).all()):
+        if((self.cache_input_proba is not None) and (X.shape == self.cache_input_proba.shape) and (X == self.cache_input_proba).all().all()):
             pred = self.cache_output_proba
         else:
             for name, model in self.predictors.items():
@@ -126,6 +121,8 @@ class Pool:
         for name, probas in proba_results.items():
             poolProb[name] = 1 - np.max(probas, axis=1)
 
+        predictions = pd.DataFrame(np.array(st.mode(predictions.values, axis=1))[0])
+
         match reject_method:
             case 'max':
                 predictions['score'] = poolProb.apply(lambda x: max(x), axis=1)
@@ -164,6 +161,8 @@ class Pool:
 
         for name, probas in results.items():
             poolProb[name] = 1 - np.max(probas, axis=1)
+
+        predictions = pd.DataFrame(np.array(st.mode(predictions.values, axis=1))[0])
 
         match reject_method:
             case 'max':

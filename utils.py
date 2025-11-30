@@ -22,7 +22,7 @@ def load_all_models(experiments:str|list, model_names:list=CONFIG['BASE_MODELS']
 
     return models
 
-def rejection_overhall(rejector, x, x_norm, y, rej_rates, methods=['avg','median','min','max']):
+def rejection_overhall(rejector, x, y, rej_rates, methods=['avg','median','min','max']):
     results_log = pd.DataFrame(columns=['Method','Rejection Rate','Accuracy','Precision','Recall','F1-Score'])
     rejection_history = pd.DataFrame(columns=['idx','Method','Rejection Rate'])
     #rejected = {}
@@ -31,13 +31,14 @@ def rejection_overhall(rejector, x, x_norm, y, rej_rates, methods=['avg','median
         raise ValueError("Apenas valores entre 0 e 1")
     if(rej_rates.max() != 1):
         rej_rates = np.append(rej_rates, [1])
-    
+    if(isinstance(y, pd.DataFrame) or isinstance(y, pd.Series)):
+        y = y.values
     total_iterations = len(methods) * len(rej_rates)
 
     with tqdm(total=total_iterations, desc="Processing") as pbar:
         for method in methods:
             for reject_rate in rej_rates:
-                y_pred = rejector.predictWithReject(x, x_norm, reject_rate, method, warnings=False)
+                y_pred = rejector.reject_rate_predict(x, reject_rate, method, warnings=False)
                 idx = y_pred.dropna().index
                 
                 idx_rej = y_pred[y_pred.isna()].index

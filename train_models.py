@@ -431,7 +431,7 @@ def get_data(dataset:str):
         y_test = pd.concat([test_pos['target'], test_neg['target']], ignore_index=True)
 
         # Normalização baseada no conjunto de treinamento
-        scaler = SpecificScaler().fit(X_train_norm, continuous_cols)
+        scaler = SpecificScaler().fit(X_train, continuous_cols)
 
         # Balanceamento no conjunto de treinamento
         o_sampler = RandomOverSampler(random_state=CONFIG['SEED'])
@@ -832,7 +832,7 @@ def getExpName(dataset):
 if(__name__=='__main__'):
     NUM_TRIALS = 20
     #DATASET = 'circles'
-    for DATASET in ['airbnb','covertype','heloc','churn']:
+    for DATASET in ['twomoons','circles','aniso','blobs','varied','covid','airbnb','heloc','churn','covertype']:
         experiment_name = getExpName(DATASET)
 
         searchAndTrain(dataset=DATASET, 
