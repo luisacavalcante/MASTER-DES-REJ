@@ -22,6 +22,9 @@ from sklearn.ensemble import RandomForestClassifier#, RandomForestRegressor
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import AdaBoostClassifier
 from xgboost import XGBClassifier
+from sklearn.frozen import FrozenEstimator
+from sklearn.calibration import CalibratedClassifierCV
+from deslib.des import METADES
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from sklearn.model_selection import cross_val_score
@@ -127,8 +130,6 @@ def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test
         
         # Registrar modelo
         mlflow.sklearn.log_model(model, name=model_name)
-        
-        return model
     
 def load_model_by_name(experiment_name, run_name):
     """
@@ -222,8 +223,8 @@ def get_data(dataset:str):
                                        cluster_std=CONFIG['VARIED']['CLUSTER_STD'],
                                        random_state=CONFIG['SEED'])
             
-        #df = pd.DataFrame(dict(x0=X[:,0], x1=X[:,1], label=y))
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, shuffle=True, random_state=CONFIG['SEED'])
+        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, shuffle=True, random_state=CONFIG['SEED'])
+        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
         scaler = SpecificScaler().fit(X_train)
 
     elif(dataset=='covid'):
@@ -232,12 +233,13 @@ def get_data(dataset:str):
 
         df_covid = pd.read_csv('data/hospital2 (2).csv').drop(columns=['creatino.fosfoquinase.cpk.plasma.ck',
                                                                         'troponina.i.plasma.troponina.i']) # 134 exemplos
-        X_test, y_test = df_covid.drop(columns=['severity']), df_covid['severity']
+        X_temp, y_temp = df_covid.drop(columns=['severity']), df_covid['severity']
+        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
 
         nmrc_cols = X_train.columns[1:]
         scaler = SpecificScaler().fit(X_train, nmrc_cols)
 
-        return X_train, X_test, y_train, y_test, scaler
+        return X_train, X_val, X_test, y_train, y_val, y_test, scaler
 
     elif(dataset=='airbnb'):
         df = pd.read_csv('data/listings.csv')
@@ -255,40 +257,33 @@ def get_data(dataset:str):
 
                 if(bt=='bath'):
                     bathrooms.at[i,'bath_type'] = 'regular bath'
-                #else:
-                #    bathrooms.at[i,'bath_type'] = re.sub(' bath', '', bt)
 
         df['bathrooms'] = bathrooms['n_baths'].astype(float)
         df['bathroom_type'] = bathrooms['bath_type']
 
         df = df[[
-            'host_response_time', #ok
-            'host_response_rate', #ok
-            'host_is_superhost', #ok
-            'host_total_listings_count', #ok
-            'host_identity_verified', #ok
-            'latitude', #ok
-            'longitude', #ok
+            'host_response_time',
+            'host_response_rate',
+            'host_is_superhost',
+            'host_total_listings_count',
+            'host_identity_verified',
+            'latitude',
+            'longitude',
             'property_type',
-            'room_type', #ok
-            'accommodates', #ok
-            'bathrooms', #ok (o atualizado, vindo de bathrooms_text)
-            'bathroom_type', #ok
-            'bedrooms', #ok
-            'beds', #ok
-            'number_of_reviews', #ok
-            #'number_of_reviews_l30d', #ok
-            'review_scores_rating', #ok
-            'review_scores_checkin', #ok
-            'review_scores_communication', #ok
-            'review_scores_location', #ok
-            'minimum_nights',#ok (como o preço é apenas no momento, então vou deixar as noites apenas do momento também)
-            'maximum_nights',#ok (como o preço é apenas no momento, então vou deixar as noites apenas do momento também)
-            #'has_availability',#ok
-            'availability_30',#ok
-            #'availability_60',#ok
-            #'availability_90',#ok
-            #'availability_365',#ok
+            'room_type',
+            'accommodates',
+            'bathrooms',
+            'bathroom_type',
+            'bedrooms',
+            'beds',
+            'number_of_reviews',
+            'review_scores_rating',
+            'review_scores_checkin',
+            'review_scores_communication',
+            'review_scores_location',
+            'minimum_nights',
+            'maximum_nights',
+            'availability_30',
             'price'
         ]].dropna()
 
@@ -300,11 +295,13 @@ def get_data(dataset:str):
         
         X, y = df.drop(columns=['price']), df['price'].astype(int)
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, shuffle=True, random_state=CONFIG['SEED'])
+        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, shuffle=True, random_state=CONFIG['SEED'])
+        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
 
         onehot = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
         onehot = onehot.set_output(transform='pandas')
         X_train = pd.concat([X_train.drop(columns=['property_type','room_type','bathroom_type']), onehot.fit_transform(X_train[['property_type','room_type','bathroom_type']], y_train)], axis=1)
+        X_val = pd.concat([X_val.drop(columns=['property_type','room_type','bathroom_type']), onehot.transform(X_val[['property_type','room_type','bathroom_type']])], axis=1)
         X_test = pd.concat([X_test.drop(columns=['property_type','room_type','bathroom_type']), onehot.transform(X_test[['property_type','room_type','bathroom_type']])], axis=1)
 
         nmrc_cols = ['host_response_time','host_response_rate','host_total_listings_count',
@@ -320,32 +317,15 @@ def get_data(dataset:str):
 
         X, y = df.drop(columns=['RiskPerformance']), df['RiskPerformance'].replace({'Bad':0, 'Good':1}).astype(int)
 
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=CONFIG['SEED'], shuffle=True)
+        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, random_state=CONFIG['SEED'], shuffle=True)
+        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=CONFIG['SEED'], shuffle=True)
 
         scaler = StandardScaler().fit(X_train)
 
-    #elif(dataset=='machinefailure'):
-    #    df = df.drop(columns=['UDI','Product ID'])
-
-    #    df['Label'] = df.apply(lambda x: np.nan if x[['TWF','HDF','PWF','OSF']].sum()>1 else 0 if x[['TWF','HDF','PWF','OSF']].sum()==0 else x[['TWF','HDF','PWF','OSF']].values.argmax()+1, axis=1)#.astype(int)
-    #    df = df.dropna()
-
-    #    df['Type'] = df['Type'].replace({'L':0,'M':1,'H':2}).astype(int)
-
-    #    X, y = df.drop(columns=['Label']), df['Label'].astype(int)
-
-    #    X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=CONFIG['SEED'], shuffle=True)
-
-    #    scaler = StandardScaler()
-    #    X_train_norm = scaler.fit_transform(X_train.copy())
-    #    X_test_norm = scaler.transform(X_test.copy())
-
     elif(dataset=='covertype'):
         df = pd.read_csv('data/covertype.csv')
-        # Carregar dataset
         target = 'Cover_Type'
 
-        # Amostragem estratificada de 10%
         df_sample, _ = train_test_split(
             df, 
             test_size=0.9,
@@ -354,15 +334,12 @@ def get_data(dataset:str):
             shuffle=True
         )
 
-        # Separar features e target
         X = df_sample.drop(columns=[target])
         y = df_sample[target].astype(int)-1
 
-        # Dividir em treino (70%) e teste (30%)
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, stratify=y, random_state=CONFIG['SEED'], shuffle=True)
- 
-        X_train_norm = X_train.copy()
-        X_test_norm = X_test.copy()
+        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, stratify=y, random_state=CONFIG['SEED'], shuffle=True)
+        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+
         nmrc_cols = ['Elevation', 'Aspect', 'Slope', 'Horizontal_Distance_To_Hydrology',
                     'Vertical_Distance_To_Hydrology', 'Horizontal_Distance_To_Roadways',
                     'Hillshade_9am', 'Hillshade_Noon', 'Hillshade_3pm',
@@ -373,7 +350,6 @@ def get_data(dataset:str):
     elif(dataset=='churn'):
         df = pd.read_csv(f'data/customer_churn_telecom_services.csv', header=0)
 
-        # Quantiades de cada valor único por coluna
         continuous_cols = []
         cat_cols = []
 
@@ -386,8 +362,6 @@ def get_data(dataset:str):
 
         df['TotalCharges'] = df['TotalCharges'].fillna(0)
 
-        # Alterando colunas categóricas binárias para int
-
         rdict = {'gender': {'Male': 0, 'Female': 1},
                 'Partner': {'No': 0, 'Yes': 1},
                 'Dependents': {'No': 0, 'Yes': 1},
@@ -396,8 +370,6 @@ def get_data(dataset:str):
                 'Churn': {'No': 0, 'Yes': 1},
                 }
 
-        # Alterando colunas que são parcialmente dummy
-        # Exp.: OnlineSecurity: ("No internet service", "No", "Yes") -> (0, 1, 2)
         rdict['MultipleLines'] = {'No phone service': 0, 'No': 1, 'Yes': 2}
 
         cols = ['OnlineSecurity', 'OnlineBackup', 'DeviceProtection', 'TechSupport',
@@ -405,8 +377,6 @@ def get_data(dataset:str):
 
         for col in cols:
             rdict[col] = {'No internet service': 0, 'No': 1, 'Yes': 2}
-
-        # Alterando colunas não-dummy
 
         rdict['InternetService'] = {'No': 0, 'DSL': 1, 'Fiber optic': 2}
         rdict['Contract'] = {'Month-to-month': 0, 'One year': 1, 'Two year': 2}
@@ -418,30 +388,31 @@ def get_data(dataset:str):
         cols = df.drop(columns=['target']).columns
 
         temp = df[df.target==1]
-        train_pos, test_pos = train_test_split(temp, test_size=0.3, shuffle=True, random_state=CONFIG['SEED'])
+        train_pos, temp_pos = train_test_split(temp, test_size=0.67, shuffle=True, random_state=CONFIG['SEED'])
+        val_pos, test_pos = train_test_split(temp_pos, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
 
         temp = df[df.target==0]
-        train_neg, test_neg = train_test_split(temp, test_size=0.3, shuffle=True, random_state=CONFIG['SEED'])
-
+        train_neg, temp_neg = train_test_split(temp, test_size=0.67, shuffle=True, random_state=CONFIG['SEED'])
+        val_neg, test_neg = train_test_split(temp_neg, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
 
         X_train = pd.concat([train_pos[cols], train_neg[cols]], ignore_index=True)
         y_train = pd.concat([train_pos['target'], train_neg['target']], ignore_index=True)
 
+        X_val = pd.concat([val_pos[cols], val_neg[cols]], ignore_index=True)
+        y_val = pd.concat([val_pos['target'], val_neg['target']], ignore_index=True)
+
         X_test = pd.concat([test_pos[cols], test_neg[cols]], ignore_index=True)
         y_test = pd.concat([test_pos['target'], test_neg['target']], ignore_index=True)
 
-        # Normalização baseada no conjunto de treinamento
         scaler = SpecificScaler().fit(X_train, continuous_cols)
 
-        # Balanceamento no conjunto de treinamento
         o_sampler = RandomOverSampler(random_state=CONFIG['SEED'])
-
         X_train, y_train = o_sampler.fit_resample(X_train, y_train)
 
     else:
         raise ValueError('Dataset Not Usable')
     
-    return X_train, X_test, y_train, y_test, scaler
+    return X_train, X_val, X_test, y_train, y_val, y_test, scaler
 
 # ======================================================
 
@@ -449,11 +420,17 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
 
     mlflow.set_experiment(experiment_name=experiment_name)
 
-    X_train, X_test, y_train, y_test, scaler = get_data(dataset)
+    X_train, X_val, X_test, y_train, y_val, y_test, scaler = get_data(dataset)
     X_train_norm = scaler.transform(X_train)
     X_test_norm = scaler.transform(X_test)
 
     scorer_string = 'f1_macro' if len(set(y_train))>2 else 'f1'
+    if len(X_val) < 750:
+        cal_method = 'isotonic'
+        num_cv_folds = 5
+    else:
+        cal_method = 'sigmoid'
+        num_cv_folds = 10
 
     # 1. Define an objective function to be maximized.
     def dtree_objective(trial:optuna.trial._trial.Trial):
@@ -466,8 +443,8 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         
         clf = DecisionTreeClassifier(max_depth=max_depth, criterion=criterion,
                                     min_samples_split=min_samples_split,
-                                    min_samples_leaf=min_samples_leaf).fit(X_train, y_train)
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=10).mean()
+                                    min_samples_leaf=min_samples_leaf)
+        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds).mean()
         
         return score
 
@@ -483,9 +460,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             loss=loss, penalty=penalty, alpha=alpha, 
             learning_rate=learning_rate, eta0=eta0, max_iter=max_iter,
             random_state=CONFIG['SEED']
-        ).fit(X_train_norm, y_train)
+        )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def logreg_objective(trial):
@@ -500,8 +477,8 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             'max_iter': max_iter, 'random_state': CONFIG['SEED']
         }
         
-        clf = LogisticRegression(**params).fit(X_train_norm, y_train)
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        clf = LogisticRegression(**params)
+        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def knn_objective(trial):
@@ -513,9 +490,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         clf = KNeighborsClassifier(
             n_neighbors=n_neighbors, weights=weights, 
             metric=metric, p=p
-        ).fit(X_train_norm, y_train)
+        )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def svm_linear_objective(trial):
@@ -524,9 +501,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         
         clf = SVC(
             kernel='linear', C=C, max_iter=max_iter, random_state=CONFIG['SEED']
-        ).fit(X_train_norm, y_train)
+        )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def svm_poly_objective(trial):
@@ -539,9 +516,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         clf = SVC(
             kernel='poly', C=C, degree=degree, gamma=gamma, 
             coef0=coef0, max_iter=max_iter, random_state=CONFIG['SEED']
-        ).fit(X_train_norm, y_train)
+        )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def svm_rbf_objective(trial):
@@ -551,9 +528,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         
         clf = SVC(
             kernel='rbf', C=C, gamma=gamma, max_iter=max_iter, random_state=CONFIG['SEED']
-        ).fit(X_train_norm, y_train)
+        )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def mlp_objective(trial):
@@ -572,9 +549,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             solver=solver, alpha=alpha, learning_rate=learning_rate,
             learning_rate_init=learning_rate_init,
             random_state=CONFIG['SEED']
-        ).fit(X_train_norm, y_train)
+        )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def rf_objective(trial):
@@ -590,9 +567,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf,
             #max_features=max_features, 
             random_state=CONFIG['SEED'], n_jobs=-1
-        ).fit(X_train, y_train)
+        )
         
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def gb_objective(trial):
@@ -609,9 +586,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             max_depth=max_depth, min_samples_split=min_samples_split,
             min_samples_leaf=min_samples_leaf, subsample=subsample,
             max_features=max_features, random_state=CONFIG['SEED']
-        ).fit(X_train, y_train)
+        )
         
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def ada_objective(trial):
@@ -623,9 +600,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             n_estimators=n_estimators, learning_rate=learning_rate,
             #algorithm=algorithm, 
             random_state=CONFIG['SEED']
-        ).fit(X_train, y_train)
+        )
         
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=10)
+        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def xgb_objective(trial):
@@ -645,184 +622,248 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             gamma=gamma, #1subsample=subsample, colsample_bytree=colsample_bytree,
             reg_alpha=reg_alpha, reg_lambda=reg_lambda, 
             random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss'
-        ).fit(X_train, y_train)
+        )
         
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=1, cv=10)
+        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=1, cv=num_cv_folds)
         return score.mean()
 
     # ============================================
 
-    loaded_models = {}
-
-    # 3. Create a study object and optimize the objective function.
+    loaded_models = []
+    
+    # Decision Tree
     try:
-        loaded_models['Decision_Tree'] = load_model_by_name(experiment_name=experiment_name, run_name='Decision_Tree')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='Decision_Tree')[0]
+        loaded_models.append(['Decision_Tree', model])
     except ValueError:
         dtree_study = optuna.create_study(direction='maximize')
         dtree_study.optimize(dtree_objective, n_trials=num_trials)
         dtree_params = dtree_study.best_params
-        loaded_models['Decision_Tree'] = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
-        loaded_models['Decision_Tree'] = log_model_to_mlflow(
-            loaded_models['Decision_Tree'], "Decision_Tree", dtree_params, 
+        base_model = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
+        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        log_model_to_mlflow(
+            model, "Decision_Tree", dtree_params, 
             X_train, y_train, X_test, y_test
         )
+        loaded_models.append(['Decision_Tree', model])
 
+# SGD
     try:
-        loaded_models['SGD'] = load_model_by_name(experiment_name=experiment_name, run_name='SGD')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='SGD')[0]
+        loaded_models.append(['SGD', model])
     except ValueError:
         sgd_study = optuna.create_study(direction='maximize')
         sgd_study.optimize(sgd_objective, n_trials=num_trials)
         sgd_params = sgd_study.best_params
-        loaded_models['SGD'] = Pipeline([
+        # 1. Treina o modelo base antes
+        base_clf = SGDClassifier(**sgd_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train)
+        # 2. Calibra o modelo treinado e inclui no Pipeline
+        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        model = Pipeline([
             ('scaler', scaler),
-            ('clf', SGDClassifier(**sgd_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
+            ('clf', calibrated_clf)
         ])
-        loaded_models['SGD'] = log_model_to_mlflow(
-            loaded_models['SGD'], "SGD", sgd_params,
-            X_train_norm, y_train, X_test_norm, y_test
-        )
+        log_model_to_mlflow(model, "SGD", sgd_params, X_train_norm, y_train, X_test_norm, y_test)
+        loaded_models.append(['SGD', model])
 
+    # Logistic Regression
     try:
-        loaded_models['Logistic_Regression'] = load_model_by_name(experiment_name=experiment_name, run_name='Logistic_Regression')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='Logistic_Regression')[0]
+        loaded_models.append(['Logistic_Regression', model])
     except ValueError:
         logreg_study = optuna.create_study(direction='maximize')
         logreg_study.optimize(logreg_objective, n_trials=num_trials)
         logreg_params = logreg_study.best_params
-        loaded_models['Logistic_Regression'] = Pipeline([
+        base_clf = LogisticRegression(**logreg_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train)
+        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        model = Pipeline([
             ('scaler', scaler),
-            ('clf', LogisticRegression(**logreg_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
+            ('clf', calibrated_clf)
         ])
-        loaded_models['Logistic_Regression'] = log_model_to_mlflow(
-            loaded_models['Logistic_Regression'], "Logistic_Regression", logreg_params,
-            X_train, y_train, X_test_norm, y_test
-        )
+        log_model_to_mlflow(model, "Logistic_Regression", logreg_params, X_train_norm, y_train, X_test_norm, y_test)
+        loaded_models.append(['Logistic_Regression', model])
 
+    # KNN
     try:
-        loaded_models['KNN'] = load_model_by_name(experiment_name=experiment_name, run_name='KNN')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='KNN')[0]
+        loaded_models.append(['KNN', model])
     except ValueError:
         knn_study = optuna.create_study(direction='maximize')
         knn_study.optimize(knn_objective, n_trials=num_trials)
         knn_params = knn_study.best_params
-        loaded_models['KNN'] = Pipeline([
+        base_clf = KNeighborsClassifier(**knn_params).fit(X_train_norm, y_train)
+        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        model = Pipeline([
             ('scaler', scaler),
-            ('clf', KNeighborsClassifier(**knn_params).fit(X_train_norm, y_train))
+            ('clf', calibrated_clf)
         ])
-        loaded_models['KNN'] = log_model_to_mlflow(
-            loaded_models['KNN'], "KNN", knn_params,
-            X_train_norm, y_train, X_test_norm, y_test
-        )
+        log_model_to_mlflow(model, "KNN", knn_params, X_train_norm, y_train, X_test_norm, y_test)
+        loaded_models.append(['KNN', model])
 
+    # SVM Linear
     try:
-        loaded_models['SVM_Linear'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Linear')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Linear')[0]
+        loaded_models.append(['SVM_Linear', model])
     except ValueError:
         svm_linear_study = optuna.create_study(direction='maximize')
         svm_linear_study.optimize(svm_linear_objective, n_trials=num_trials)
         svm_linear_params = svm_linear_study.best_params
-        loaded_models['SVM_Linear'] = Pipeline([
+        base_clf = SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train)
+        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        model = Pipeline([
             ('scaler', scaler),
-            ('clf', SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
+            ('clf', calibrated_clf)
         ])
-        loaded_models['SVM_Linear'] = log_model_to_mlflow(
-            loaded_models['SVM_Linear'], "SVM_Linear", svm_linear_params,
-            X_train, y_train, X_test_norm, y_test
-        )
+        log_model_to_mlflow(model, "SVM_Linear", svm_linear_params, X_train_norm, y_train, X_test_norm, y_test)
+        loaded_models.append(['SVM_Linear', model])
 
+    # SVM Polynomial
     try:
-        loaded_models['SVM_Polynomial'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Polynomial')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Polynomial')[0]
+        loaded_models.append(['SVM_Polynomial', model])
     except ValueError:
         svm_poly_study = optuna.create_study(direction='maximize')
         svm_poly_study.optimize(svm_poly_objective, n_trials=num_trials)
         svm_poly_params = svm_poly_study.best_params
-        loaded_models['SVM_Polynomial'] = Pipeline([
+        base_clf = SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train)
+        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        model = Pipeline([
             ('scaler', scaler),
-            ('clf', SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
+            ('clf', calibrated_clf)
         ])
-        loaded_models['SVM_Polynomial'] = log_model_to_mlflow(
-            loaded_models['SVM_Polynomial'], "SVM_Polynomial", svm_poly_params,
-            X_train_norm, y_train, X_test_norm, y_test
-        )
+        log_model_to_mlflow(model, "SVM_Polynomial", svm_poly_params, X_train_norm, y_train, X_test_norm, y_test)
+        loaded_models.append(['SVM_Polynomial', model])
 
+    # SVM RBF
     try:
-        loaded_models['SVM_RBF'] = load_model_by_name(experiment_name=experiment_name, run_name='SVM_RBF')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='SVM_RBF')[0]
+        loaded_models.append(['SVM_RBF', model])
     except ValueError:
         svm_rbf_study = optuna.create_study(direction='maximize')
         svm_rbf_study.optimize(svm_rbf_objective, n_trials=num_trials)
         svm_rbf_params = svm_rbf_study.best_params
-        loaded_models['SVM_RBF'] = Pipeline([
+        base_clf = SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train)
+        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        model = Pipeline([
             ('scaler', scaler),
-            ('clf', SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
+            ('clf', calibrated_clf)
         ])
-        loaded_models['SVM_RBF'] = log_model_to_mlflow(
-            loaded_models['SVM_RBF'], "SVM_RBF", svm_rbf_params,
-            X_train_norm, y_train, X_test_norm, y_test
-        )
+        log_model_to_mlflow(model, "SVM_RBF", svm_rbf_params, X_train_norm, y_train, X_test_norm, y_test)
+        loaded_models.append(['SVM_RBF', model])
 
+    # MLP
     try:
-        loaded_models['MLP'] = load_model_by_name(experiment_name=experiment_name, run_name='MLP')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='MLP')[0]
+        loaded_models.append(['MLP', model])
     except ValueError:
         mlp_study = optuna.create_study(direction='maximize')
         mlp_study.optimize(mlp_objective, n_trials=num_trials)
         mlp_params = mlp_study.best_params
         mlp_params['hidden_layer_sizes'] = (mlp_params['hidden_layer_sizes'],)
-        loaded_models['MLP'] = Pipeline([
+        base_clf = MLPClassifier(**mlp_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train)
+        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        model = Pipeline([
             ('scaler', scaler),
-            ('clf', MLPClassifier(**mlp_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
+            ('clf', calibrated_clf)
         ])
-        loaded_models['MLP'] = log_model_to_mlflow(
-            loaded_models['MLP'], "MLP", mlp_params,
-            X_train_norm, y_train, X_test_norm, y_test
-        )
+        log_model_to_mlflow(model, "MLP", mlp_params, X_train_norm, y_train, X_test_norm, y_test)
+        loaded_models.append(['MLP', model])
 
+    # Random Forest
     try:
-        loaded_models['Random_Forest'] = load_model_by_name(experiment_name=experiment_name, run_name='Random_Forest')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='Random_Forest')[0]
+        loaded_models.append(['Random_Forest', model])
     except ValueError:
         rf_study = optuna.create_study(direction='maximize')
         rf_study.optimize(rf_objective, n_trials=num_trials)
         rf_params = rf_study.best_params
-        loaded_models['Random_Forest'] = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1).fit(X_train, y_train)
-        loaded_models['Random_Forest'] = log_model_to_mlflow(
-            loaded_models['Random_Forest'], "Random_Forest", rf_params,
+        base_model = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1).fit(X_train, y_train)
+        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        log_model_to_mlflow(
+            model, "Random_Forest", rf_params,
             X_train, y_train, X_test, y_test
         )
+        loaded_models.append(['Random_Forest', model])
 
+    # Gradient Boosting
     try:
-        loaded_models['Gradient_Boosting'] = load_model_by_name(experiment_name=experiment_name, run_name='Gradient_Boosting')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='Gradient_Boosting')[0]
+        loaded_models.append(['Gradient_Boosting', model])
     except ValueError:
         gb_study = optuna.create_study(direction='maximize')
         gb_study.optimize(gb_objective, n_trials=num_trials)
         gb_params = gb_study.best_params
-        loaded_models['Gradient_Boosting'] = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
-        loaded_models['Gradient_Boosting'] = log_model_to_mlflow(
-            loaded_models['Gradient_Boosting'], "Gradient_Boosting", gb_params,
+        base_model = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
+        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        log_model_to_mlflow(
+            model, "Gradient_Boosting", gb_params,
             X_train, y_train, X_test, y_test
         )
+        loaded_models.append(['Gradient_Boosting', model])
 
+    # AdaBoost
     try:
-        loaded_models['AdaBoost'] = load_model_by_name(experiment_name=experiment_name, run_name='AdaBoost')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='AdaBoost')[0]
+        loaded_models.append(['AdaBoost', model])
     except ValueError:
         ada_study = optuna.create_study(direction='maximize')
         ada_study.optimize(ada_objective, n_trials=num_trials)
         ada_params = ada_study.best_params
-        loaded_models['AdaBoost'] = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
-        loaded_models['AdaBoost'] = log_model_to_mlflow(
-            loaded_models['AdaBoost'], "AdaBoost", ada_params,
+        base_model = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
+        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        log_model_to_mlflow(
+            model, "AdaBoost", ada_params,
             X_train, y_train, X_test, y_test
         )
+        loaded_models.append(['AdaBoost', model])
 
+    # XGBoost
     try:
-        loaded_models['XGBoost'] = load_model_by_name(experiment_name=experiment_name, run_name='XGBoost')[0]
+        model = load_model_by_name(experiment_name=experiment_name, run_name='XGBoost')[0]
+        loaded_models.append(['XGBoost', model])
     except ValueError:
         xgb_study = optuna.create_study(direction='maximize')
         xgb_study.optimize(xgb_objective, n_trials=num_trials)
         xgb_params = xgb_study.best_params
-        loaded_models['XGBoost'] = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True).fit(X_train, y_train)
-        loaded_models['XGBoost'] = log_model_to_mlflow(
-            loaded_models['XGBoost'], "XGBoost", xgb_params,
+        base_model = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True).fit(X_train, y_train)
+        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        log_model_to_mlflow(
+            model, "XGBoost", xgb_params,
             X_train, y_train, X_test, y_test
+        )
+        loaded_models.append(['XGBoost', model])
+
+    # METADES
+
+    pool_classifiers = [x[1] for x in loaded_models]
+
+    #def mdes_objective(trial):
+    #    k = trial.suggest_int('k', 3, 20)
+    #    kp = trial.suggest_int('kp', 3, 20)
+    #    selection_threshold = trial.suggest_int('selection_threshold', 0.5, 0.8)
+    #    knn_metric = trial.suggest_categorical('knn_metric', ['minkowski', 'cosine', 'mahalanobis'])
+    #    
+    #    clf = METADES(pool_classifiers, k=k, Kp=kp, selection_threshold=selection_threshold, 
+    #                  knn_metric=knn_metric, random_state=CONFIG['SEED'])
+    #    
+    #    score = cross_val_score(clf, X_val, y_val, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+    #    return score.mean()
+
+    try:
+        metades = load_model_by_name(experiment_name=experiment_name, run_name='METADES')[0]
+    except ValueError:
+        # Juro que tentei fazer HPO no META-DES mas essa DESLib é QUEBRADA e eu não aguento mais tentar fazer isso funcionar
+        #mdes_study = optuna.create_study(direction='maximize')
+        #mdes_study.optimize(mdes_objective, n_trials=num_trials)
+        #mdes_params = mdes_study.best_params
+        metades = METADES(pool_classifiers, random_state=CONFIG['SEED']).fit(X_val, y_val)
+        log_model_to_mlflow(
+            metades, "METADES", metades.get_params(),
+            X_val, y_val, X_test, y_test
         )
 
     if(load):
-        return loaded_models
+        return dict(loaded_models), metades
 
 def getExpName(dataset):
     global CONFIG
@@ -830,9 +871,9 @@ def getExpName(dataset):
     return f"{dataset}_{CONFIG['VERSION']}_{CONFIG['SEED']}"
 
 if(__name__=='__main__'):
-    NUM_TRIALS = 20
+    NUM_TRIALS = 25
     #DATASET = 'circles'
-    for DATASET in ['twomoons','circles','aniso','blobs','varied','covid','airbnb','heloc','churn','covertype']:
+    for DATASET in ['covid','airbnb','heloc','churn','covertype']: # 'twomoons',
         experiment_name = getExpName(DATASET)
 
         searchAndTrain(dataset=DATASET, 

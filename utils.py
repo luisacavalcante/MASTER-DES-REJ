@@ -63,3 +63,47 @@ def rejection_overhall(rejector, x, y, rej_rates, methods=['avg','median','min',
                 pbar.update(1)
 
     return results_log, rejection_history
+
+
+def rejection_plus_metades(rejector, predictor, x, y, rej_rates, methods=['avg','median','min','max']):
+    results_log = pd.DataFrame(columns=['Method','Rejection Rate','Accuracy','Precision','Recall','F1-Score'])
+    rejection_history = pd.DataFrame(columns=['idx','Method','Rejection Rate'])
+    #rejected = {}
+    rej_rates = np.asarray(rej_rates)
+    if(any(rej_rates<0) or any(rej_rates>1)):
+        raise ValueError("Apenas valores entre 0 e 1")
+    if(rej_rates.max() != 1):
+        rej_rates = np.append(rej_rates, [1])
+    if(isinstance(y, pd.DataFrame) or isinstance(y, pd.Series)):
+        y = y.values
+    total_iterations = len(methods) * len(rej_rates)
+
+    with tqdm(total=total_iterations, desc="Processing") as pbar:
+        for method in methods:
+            for reject_rate in rej_rates:
+                y_pred_rej = rejector.reject_rate_predict(x, reject_rate, method, warnings=False)
+                idx = y_pred_rej.dropna().index
+                idx_rej = y_pred_rej[y_pred_rej.isna()].index
+                
+                y_pred = predictor.predict(x.loc[y_pred_rej].copy())
+                rejected = rejection_history.loc[rejection_history['Method']==method,'idx']
+                idx_rej = list(set(idx_rej) - set(rejected))
+                for i in range(len(idx_rej)):
+                    rejection_history.loc[rejection_history.shape[0],:] = [idx_rej[i], method, reject_rate]
+                
+                if(reject_rate!=1):
+                    acc = accuracy_score(y[idx], y_pred)
+                    if(len(set(y))>2):
+                        pre = precision_score(y[idx], y_pred, zero_division=0, average='macro')
+                        rec = recall_score(y[idx], y_pred, zero_division=0, average='macro')
+                        f1s = f1_score(y[idx], y_pred, zero_division=0, average='macro')
+                    else:
+                        pre = precision_score(y[idx], y_pred, zero_division=0)
+                        rec = recall_score(y[idx], y_pred, zero_division=0)
+                        f1s = f1_score(y[idx], y_pred, zero_division=0)
+                    results_log.loc[results_log.shape[0]] = [method,reject_rate,acc,pre,rec,f1s]
+                    
+                pbar.set_postfix({'Method': method, 'Rate': f'{reject_rate:.2f}'})
+                pbar.update(1)
+
+    return results_log, rejection_history

@@ -8,27 +8,29 @@ from sklearn.preprocessing import StandardScaler
 class SpecificScaler(StandardScaler):
     def __init__(self, *, copy = True, with_mean = True, with_std = True):
         super().__init__(copy=copy, with_mean=with_mean, with_std=with_std)
-        self.features = None
+        self.chosen_features_ = None
+        self.all_features_ = None
 
     def _prep_data(self, X, features:list=None):
         if(not isinstance(X, pd.DataFrame)):
             X = pd.DataFrame(X)
         if(features is not None):
-            self.features = features
-        elif(self.features is None):
-            self.features = X.columns
+            self.chosen_features_ = features
+        elif(self.chosen_features_ is None):
+            self.chosen_features_ = X.columns
+        self.all_features_ = X.columns
         return X
 
     def fit(self, X:pd.DataFrame, features:list=None):
         '''Fit the scaler on specific columns of data'''
         X = self._prep_data(X.copy(), features)
-        super().fit(X.loc[:,self.features])
+        super().fit(X.loc[:,self.chosen_features_])
         return self
 
     def fit_transform(self, X:pd.DataFrame, features:list=None):
         '''Fit the scaler on specific columns of data and transform it'''
         X = self._prep_data(X.copy(), features)
-        X.loc[:,self.features] = super().fit_transform(X.loc[:,self.features])
+        X.loc[:,self.chosen_features_] = super().fit_transform(X.loc[:,self.chosen_features_])
 
         return X
 
@@ -36,8 +38,8 @@ class SpecificScaler(StandardScaler):
         '''Use the fitted scaler to transform specific columns of data'''
         X = X.copy()
         if(not isinstance(X, pd.DataFrame)):
-            X = pd.DataFrame(X)
-        X.loc[:,self.features] = super().transform(X.loc[:,self.features])
+            X = pd.DataFrame(X, columns=self.all_features_)
+        X.loc[:,self.chosen_features_] = super().transform(X.loc[:,self.chosen_features_])
         return X
 
 class Pool:
