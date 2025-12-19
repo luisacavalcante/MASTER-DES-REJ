@@ -22,9 +22,8 @@ from sklearn.ensemble import RandomForestClassifier#, RandomForestRegressor
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import AdaBoostClassifier
 from xgboost import XGBClassifier
-from sklearn.frozen import FrozenEstimator
-from sklearn.calibration import CalibratedClassifierCV
 from deslib.des import METADES
+from classes import METADESR
 
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from sklearn.model_selection import cross_val_score
@@ -353,7 +352,8 @@ def get_data(dataset:str):
         continuous_cols = []
         cat_cols = []
 
-        for col in df.drop(columns=['Churn']).columns:
+        cols = df.drop(columns=['Churn']).columns
+        for col in cols:
             unique_values = df[col].value_counts()
             if(len(unique_values) <= 4):
                 cat_cols.append(col)
@@ -372,10 +372,10 @@ def get_data(dataset:str):
 
         rdict['MultipleLines'] = {'No phone service': 0, 'No': 1, 'Yes': 2}
 
-        cols = ['OnlineSecurity', 'OnlineBackup', 'DeviceProtection', 'TechSupport',
+        truple_cols = ['OnlineSecurity', 'OnlineBackup', 'DeviceProtection', 'TechSupport',
                 'StreamingTV', 'StreamingMovies']
 
-        for col in cols:
+        for col in truple_cols:
             rdict[col] = {'No internet service': 0, 'No': 1, 'Yes': 2}
 
         rdict['InternetService'] = {'No': 0, 'DSL': 1, 'Fiber optic': 2}
@@ -384,25 +384,11 @@ def get_data(dataset:str):
                                 'Mailed check': 2, 'Electronic check': 3}
 
         df = df.replace(rdict)
-        df = df.rename(columns={'Churn': 'target'}) 
-        cols = df.drop(columns=['target']).columns
+        X = df[cols]
+        y = df['Churn']
 
-        temp = df[df.target==1]
-        train_pos, temp_pos = train_test_split(temp, test_size=0.67, shuffle=True, random_state=CONFIG['SEED'])
-        val_pos, test_pos = train_test_split(temp_pos, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
-
-        temp = df[df.target==0]
-        train_neg, temp_neg = train_test_split(temp, test_size=0.67, shuffle=True, random_state=CONFIG['SEED'])
-        val_neg, test_neg = train_test_split(temp_neg, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
-
-        X_train = pd.concat([train_pos[cols], train_neg[cols]], ignore_index=True)
-        y_train = pd.concat([train_pos['target'], train_neg['target']], ignore_index=True)
-
-        X_val = pd.concat([val_pos[cols], val_neg[cols]], ignore_index=True)
-        y_val = pd.concat([val_pos['target'], val_neg['target']], ignore_index=True)
-
-        X_test = pd.concat([test_pos[cols], test_neg[cols]], ignore_index=True)
-        y_test = pd.concat([test_pos['target'], test_neg['target']], ignore_index=True)
+        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, stratify=y, random_state=CONFIG['SEED'], shuffle=True)
+        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
 
         scaler = SpecificScaler().fit(X_train, continuous_cols)
 
@@ -425,12 +411,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
     X_test_norm = scaler.transform(X_test)
 
     scorer_string = 'f1_macro' if len(set(y_train))>2 else 'f1'
-    if len(X_val) < 750:
-        cal_method = 'isotonic'
-        num_cv_folds = 5
-    else:
-        cal_method = 'sigmoid'
-        num_cv_folds = 10
+    num_cv_folds = 10 if len(X_train)>500 else 5
 
     # 1. Define an objective function to be maximized.
     def dtree_objective(trial:optuna.trial._trial.Trial):
@@ -629,225 +610,189 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
 
     # ============================================
 
-    loaded_models = []
-    
-    # Decision Tree
+    loaded_models = {}
+
+    # 3. Create a study object and optimize the objective function.
+    model_name = 'Decision_Tree'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='Decision_Tree')[0]
-        loaded_models.append(['Decision_Tree', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         dtree_study = optuna.create_study(direction='maximize')
         dtree_study.optimize(dtree_objective, n_trials=num_trials)
         dtree_params = dtree_study.best_params
-        base_model = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
-        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
+        loaded_models[model_name] = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
         log_model_to_mlflow(
-            model, "Decision_Tree", dtree_params, 
+            loaded_models[model_name], model_name, dtree_params, 
             X_train, y_train, X_test, y_test
         )
-        loaded_models.append(['Decision_Tree', model])
 
-# SGD
+    model_name = 'SGD'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='SGD')[0]
-        loaded_models.append(['SGD', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         sgd_study = optuna.create_study(direction='maximize')
         sgd_study.optimize(sgd_objective, n_trials=num_trials)
         sgd_params = sgd_study.best_params
-        # 1. Treina o modelo base antes
-        base_clf = SGDClassifier(**sgd_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train)
-        # 2. Calibra o modelo treinado e inclui no Pipeline
-        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        model = Pipeline([
+        loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', calibrated_clf)
+            ('clf', SGDClassifier(**sgd_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
         ])
-        log_model_to_mlflow(model, "SGD", sgd_params, X_train_norm, y_train, X_test_norm, y_test)
-        loaded_models.append(['SGD', model])
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, sgd_params,
+            X_train_norm, y_train, X_test_norm, y_test
+        )
 
-    # Logistic Regression
+    model_name = 'Logistic_Regression'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='Logistic_Regression')[0]
-        loaded_models.append(['Logistic_Regression', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         logreg_study = optuna.create_study(direction='maximize')
         logreg_study.optimize(logreg_objective, n_trials=num_trials)
         logreg_params = logreg_study.best_params
-        base_clf = LogisticRegression(**logreg_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train)
-        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        model = Pipeline([
+        loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', calibrated_clf)
+            ('clf', LogisticRegression(**logreg_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
         ])
-        log_model_to_mlflow(model, "Logistic_Regression", logreg_params, X_train_norm, y_train, X_test_norm, y_test)
-        loaded_models.append(['Logistic_Regression', model])
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, logreg_params,
+            X_train, y_train, X_test_norm, y_test
+        )
 
-    # KNN
+    model_name = 'KNN'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='KNN')[0]
-        loaded_models.append(['KNN', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         knn_study = optuna.create_study(direction='maximize')
         knn_study.optimize(knn_objective, n_trials=num_trials)
         knn_params = knn_study.best_params
-        base_clf = KNeighborsClassifier(**knn_params).fit(X_train_norm, y_train)
-        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        model = Pipeline([
+        loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', calibrated_clf)
+            ('clf', KNeighborsClassifier(**knn_params).fit(X_train_norm, y_train))
         ])
-        log_model_to_mlflow(model, "KNN", knn_params, X_train_norm, y_train, X_test_norm, y_test)
-        loaded_models.append(['KNN', model])
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, knn_params,
+            X_train_norm, y_train, X_test_norm, y_test
+        )
 
-    # SVM Linear
+    model_name = 'SVM_Linear'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Linear')[0]
-        loaded_models.append(['SVM_Linear', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         svm_linear_study = optuna.create_study(direction='maximize')
         svm_linear_study.optimize(svm_linear_objective, n_trials=num_trials)
         svm_linear_params = svm_linear_study.best_params
-        base_clf = SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train)
-        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        model = Pipeline([
+        loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', calibrated_clf)
+            ('clf', SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
         ])
-        log_model_to_mlflow(model, "SVM_Linear", svm_linear_params, X_train_norm, y_train, X_test_norm, y_test)
-        loaded_models.append(['SVM_Linear', model])
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, svm_linear_params,
+            X_train, y_train, X_test_norm, y_test
+        )
 
-    # SVM Polynomial
+    model_name = 'SVM_Polynomial'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='SVM_Polynomial')[0]
-        loaded_models.append(['SVM_Polynomial', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         svm_poly_study = optuna.create_study(direction='maximize')
         svm_poly_study.optimize(svm_poly_objective, n_trials=num_trials)
         svm_poly_params = svm_poly_study.best_params
-        base_clf = SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train)
-        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        model = Pipeline([
+        loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', calibrated_clf)
+            ('clf', SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
         ])
-        log_model_to_mlflow(model, "SVM_Polynomial", svm_poly_params, X_train_norm, y_train, X_test_norm, y_test)
-        loaded_models.append(['SVM_Polynomial', model])
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, svm_poly_params,
+            X_train_norm, y_train, X_test_norm, y_test
+        )
 
-    # SVM RBF
+    model_name = 'SVM_RBF'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='SVM_RBF')[0]
-        loaded_models.append(['SVM_RBF', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         svm_rbf_study = optuna.create_study(direction='maximize')
         svm_rbf_study.optimize(svm_rbf_objective, n_trials=num_trials)
         svm_rbf_params = svm_rbf_study.best_params
-        base_clf = SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train)
-        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        model = Pipeline([
+        loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', calibrated_clf)
+            ('clf', SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
         ])
-        log_model_to_mlflow(model, "SVM_RBF", svm_rbf_params, X_train_norm, y_train, X_test_norm, y_test)
-        loaded_models.append(['SVM_RBF', model])
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, svm_rbf_params,
+            X_train_norm, y_train, X_test_norm, y_test
+        )
 
-    # MLP
+    model_name = 'MLP'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='MLP')[0]
-        loaded_models.append(['MLP', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         mlp_study = optuna.create_study(direction='maximize')
         mlp_study.optimize(mlp_objective, n_trials=num_trials)
         mlp_params = mlp_study.best_params
         mlp_params['hidden_layer_sizes'] = (mlp_params['hidden_layer_sizes'],)
-        base_clf = MLPClassifier(**mlp_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train)
-        calibrated_clf = CalibratedClassifierCV(FrozenEstimator(base_clf), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        model = Pipeline([
+        loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', calibrated_clf)
+            ('clf', MLPClassifier(**mlp_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
         ])
-        log_model_to_mlflow(model, "MLP", mlp_params, X_train_norm, y_train, X_test_norm, y_test)
-        loaded_models.append(['MLP', model])
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, mlp_params,
+            X_train_norm, y_train, X_test_norm, y_test
+        )
 
-    # Random Forest
+    model_name = 'Random_Forest'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='Random_Forest')[0]
-        loaded_models.append(['Random_Forest', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         rf_study = optuna.create_study(direction='maximize')
         rf_study.optimize(rf_objective, n_trials=num_trials)
         rf_params = rf_study.best_params
-        base_model = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1).fit(X_train, y_train)
-        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        log_model_to_mlflow(
-            model, "Random_Forest", rf_params,
+        loaded_models[model_name] = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1).fit(X_train, y_train)
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, rf_params,
             X_train, y_train, X_test, y_test
         )
-        loaded_models.append(['Random_Forest', model])
 
-    # Gradient Boosting
+    model_name = 'Gradient_Boosting'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='Gradient_Boosting')[0]
-        loaded_models.append(['Gradient_Boosting', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         gb_study = optuna.create_study(direction='maximize')
         gb_study.optimize(gb_objective, n_trials=num_trials)
         gb_params = gb_study.best_params
-        base_model = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
-        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        log_model_to_mlflow(
-            model, "Gradient_Boosting", gb_params,
+        loaded_models[model_name] = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, gb_params,
             X_train, y_train, X_test, y_test
         )
-        loaded_models.append(['Gradient_Boosting', model])
 
-    # AdaBoost
+    model_name = 'AdaBoost'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='AdaBoost')[0]
-        loaded_models.append(['AdaBoost', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         ada_study = optuna.create_study(direction='maximize')
         ada_study.optimize(ada_objective, n_trials=num_trials)
         ada_params = ada_study.best_params
-        base_model = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
-        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        log_model_to_mlflow(
-            model, "AdaBoost", ada_params,
+        loaded_models[model_name] = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, ada_params,
             X_train, y_train, X_test, y_test
         )
-        loaded_models.append(['AdaBoost', model])
 
-    # XGBoost
+    model_name = 'XGBoost'
     try:
-        model = load_model_by_name(experiment_name=experiment_name, run_name='XGBoost')[0]
-        loaded_models.append(['XGBoost', model])
+        loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
     except ValueError:
         xgb_study = optuna.create_study(direction='maximize')
         xgb_study.optimize(xgb_objective, n_trials=num_trials)
         xgb_params = xgb_study.best_params
-        base_model = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True).fit(X_train, y_train)
-        model = CalibratedClassifierCV(FrozenEstimator(base_model), method=cal_method, cv=num_cv_folds).fit(X_val, y_val)
-        log_model_to_mlflow(
-            model, "XGBoost", xgb_params,
+        loaded_models[model_name] = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True).fit(X_train, y_train)
+        loaded_models[model_name] = log_model_to_mlflow(
+            loaded_models[model_name], model_name, xgb_params,
             X_train, y_train, X_test, y_test
         )
-        loaded_models.append(['XGBoost', model])
 
     # METADES
-
-    pool_classifiers = [x[1] for x in loaded_models]
-
-    #def mdes_objective(trial):
-    #    k = trial.suggest_int('k', 3, 20)
-    #    kp = trial.suggest_int('kp', 3, 20)
-    #    selection_threshold = trial.suggest_int('selection_threshold', 0.5, 0.8)
-    #    knn_metric = trial.suggest_categorical('knn_metric', ['minkowski', 'cosine', 'mahalanobis'])
-    #    
-    #    clf = METADES(pool_classifiers, k=k, Kp=kp, selection_threshold=selection_threshold, 
-    #                  knn_metric=knn_metric, random_state=CONFIG['SEED'])
-    #    
-    #    score = cross_val_score(clf, X_val, y_val, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
-    #    return score.mean()
+    pool_classifiers = list(loaded_models.values())
 
     try:
         metades = load_model_by_name(experiment_name=experiment_name, run_name='METADES')[0]
@@ -857,13 +802,30 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         #mdes_study.optimize(mdes_objective, n_trials=num_trials)
         #mdes_params = mdes_study.best_params
         metades = METADES(pool_classifiers, random_state=CONFIG['SEED']).fit(X_val, y_val)
+        mdes_params = metades.get_params()
+        mdes_params.pop('pool_classifiers')
         log_model_to_mlflow(
-            metades, "METADES", metades.get_params(),
+            metades, "METADES", mdes_params,
+            X_val, y_val, X_test, y_test
+        )
+
+    try:
+        metadesr = load_model_by_name(experiment_name=experiment_name, run_name='METADESR')[0]
+    except ValueError:
+        # Juro que tentei fazer HPO no META-DES mas essa DESLib é QUEBRADA e eu não aguento mais tentar fazer isso funcionar
+        #mdes_study = optuna.create_study(direction='maximize')
+        #mdes_study.optimize(mdes_objective, n_trials=num_trials)
+        #mdes_params = mdes_study.best_params
+        metadesr = METADESR(pool_classifiers, random_state=CONFIG['SEED']).fit(X_val, y_val)
+        mdesr_params = metadesr.get_params()
+        mdesr_params.pop('pool_classifiers')
+        log_model_to_mlflow(
+            metadesr, "METADESR", mdesr_params,
             X_val, y_val, X_test, y_test
         )
 
     if(load):
-        return dict(loaded_models), metades
+        return {'pool_classifiers': loaded_models, 'METADES': metades, 'METADESR': metadesr}
 
 def getExpName(dataset):
     global CONFIG
@@ -873,7 +835,7 @@ def getExpName(dataset):
 if(__name__=='__main__'):
     NUM_TRIALS = 25
     #DATASET = 'circles'
-    for DATASET in ['covid','airbnb','heloc','churn','covertype']: # 'twomoons',
+    for DATASET in ['twomoons','circles','aniso','blobs','varied','covid','airbnb','heloc','churn']: #'covertype'
         experiment_name = getExpName(DATASET)
 
         searchAndTrain(dataset=DATASET, 
