@@ -5,7 +5,6 @@ import re
 import mlflow
 import mlflow.sklearn
 import optuna
-#import logging
 from sklearn.pipeline import Pipeline
 from classes import SpecificScaler
 from sklearn.datasets import make_moons, make_circles, make_blobs
@@ -16,9 +15,9 @@ from sklearn.tree import DecisionTreeClassifier
 from sklearn.linear_model import SGDClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.neighbors import KNeighborsClassifier
-from sklearn.svm import SVC#, SVR # kernels: 'linear', 'poly' e 'rbf'
+from sklearn.svm import SVC
 from sklearn.neural_network import MLPClassifier
-from sklearn.ensemble import RandomForestClassifier#, RandomForestRegressor
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.ensemble import AdaBoostClassifier
 from xgboost import XGBClassifier
@@ -36,21 +35,14 @@ warnings.filterwarnings('ignore')
 with open('config.json', 'r') as f:
     CONFIG = json.load(f)
 
-#with open('config.json', 'w') as f:
-#    CONFIG['SEED'] = randint(0, 4294967295)
-#    json.dump(CONFIG, f)
-#    print(CONFIG['SEED'])
-
 # ==================================================
 
 def auroc_score(model, x, y):
     try:
         if hasattr(model, 'predict_proba'):
             y_proba = model.predict_proba(x)
-            # Para classificação binária
             if y_proba.shape[1] == 2:
                 auroc = roc_auc_score(y, y_proba[:, 1])
-            # Para classificação multiclasse
             else:
                 auroc = roc_auc_score(y, y_proba)
         elif hasattr(model, 'decision_function'):
@@ -66,30 +58,17 @@ def auroc_score(model, x, y):
 def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test, y_test):
     """
     Treina, avalia e registra um modelo no MLflow.
-    
-    Parameters:
-    -----------
-    model : estimator
-        Modelo do scikit-learn ou compatível
-    model_name : str
-        Nome do modelo para registro
-    hyperparams : dict
-        Dicionário com os hiperparâmetros do modelo
-    X_train, y_train : array-like
-        Dados de treino
-    X_test, y_test : array-like
-        Dados de teste
     """
+    if(model_name=='METADESR'):
+        model.set_thresholds(1,0)
+    
     with mlflow.start_run(run_name=model_name):
-        # Fazer predições
         y_pred_train = model.predict(X_train)
         y_pred_test = model.predict(X_test)
         
-        # Calcular probabilidades para AUROC (se disponível)
         train_auroc = auroc_score(model, X_train, y_train)
         test_auroc = auroc_score(model, X_test, y_test)
         
-        # Calcular métricas
         train_accuracy = accuracy_score(y_train, y_pred_train)
         if(len(set(y_train)) > 2):
             train_precision = precision_score(y_train, y_pred_train, zero_division=0, average='macro')
@@ -110,10 +89,8 @@ def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test
             test_recall = recall_score(y_test, y_pred_test, zero_division=0)
             test_f1 = f1_score(y_test, y_pred_test, zero_division=0)
         
-        # Registrar hiperparâmetros
         mlflow.log_params(hyperparams)
         
-        # Registrar métricas
         mlflow.log_metric("train_accuracy", train_accuracy)
         mlflow.log_metric("train_precision", train_precision)
         mlflow.log_metric("train_recall", train_recall)
@@ -127,33 +104,16 @@ def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test
         if test_auroc is not None:
             mlflow.log_metric("test_auroc", test_auroc)
         
-        # Registrar modelo
         mlflow.sklearn.log_model(model, name=model_name)
     
 def load_model_by_name(experiment_name, run_name):
     """
     Carrega um modelo específico do MLflow pelo nome da run.
-    
-    Parameters:
-    -----------
-    experiment_name : str
-        Nome do experimento MLflow
-    run_name : str
-        Nome da run (ex: "Random_Forest", "XGBoost")
-    
-    Returns:
-    --------
-    model : estimator
-        Modelo carregado
-    run_info : dict
-        Informações da run (hiperparâmetros e métricas)
     """
-    # Buscar experimento
     experiment = mlflow.get_experiment_by_name(experiment_name)
     if experiment is None:
         raise ValueError(f"Experimento '{experiment_name}' não encontrado!")
     
-    # Buscar runs do experimento
     runs = mlflow.search_runs(
         experiment_ids=[experiment.experiment_id],
         filter_string=f"tags.mlflow.runName = '{run_name}'"
@@ -162,15 +122,13 @@ def load_model_by_name(experiment_name, run_name):
     if runs.empty:
         raise ValueError(f"Run '{run_name}' não encontrada no experimento '{experiment_name}'!")
     
-    # Pegar a run mais recente se houver múltiplas
     run = runs.iloc[0]
     run_id = run.run_id
     print(run_id)
-    # Carregar modelo
+    
     model_uri = f"runs:/{run_id}/{run_name}"
     model = mlflow.sklearn.load_model(model_uri)
     
-    # Extrair informações da run
     run_info = {
         'params': {k.replace('params.', ''): v for k, v in run.items() if k.startswith('params.')},
         'metrics': {k.replace('metrics.', ''): v for k, v in run.items() if k.startswith('metrics.')}
@@ -180,8 +138,7 @@ def load_model_by_name(experiment_name, run_name):
 
 # ======================================================
 
-from sklearn.preprocessing import OneHotEncoder, StandardScaler#, MinMaxScaler
-from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 def transform_property(x):
     x = re.sub('(Private room( in )?)|(Shared room( in )?)|(Entire )|(Room in )', '', x).lower()
@@ -194,7 +151,15 @@ def transform_property(x):
     return x
 
 def get_data(dataset:str):
+    """
+    Retorna os 4 subconjuntos de dados:
+    - T (25%): Pool de classificadores
+    - T_lambda (25%): Meta-treinamento
+    - DSEL (25%): Seleção dinâmica
+    - G (25%): Teste
+    """
     global CONFIG
+    
     if(dataset in ['twomoons','circles','aniso','blobs','varied']):
         if(dataset=='twomoons'):
             X, y = make_moons(n_samples=CONFIG['TWO_MOONS']['N_SAMPLES'], 
@@ -222,28 +187,39 @@ def get_data(dataset:str):
                                        cluster_std=CONFIG['VARIED']['CLUSTER_STD'],
                                        random_state=CONFIG['SEED'])
             
-        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, shuffle=True, random_state=CONFIG['SEED'])
-        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
-        scaler = SpecificScaler().fit(X_train)
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, shuffle=True, random_state=CONFIG['SEED'])
+        
+        # Segunda divisão: 33.33% do restante para T_lambda (25% do total), 66.67% restante
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, shuffle=True, random_state=CONFIG['SEED'])
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G (cada um com 25% do total)
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
+        
+        scaler = SpecificScaler().fit(X_T)
 
     elif(dataset=='covid'):
-        df_covid = pd.read_csv('data/hosp1_v8 (1).csv') # 526 exemplos
-        X_train, y_train = df_covid.drop(columns=['severity']), df_covid['severity']
+        df_covid = pd.read_csv('data/hosp1_v8 (1).csv')
+        X, y = df_covid.drop(columns=['severity']), df_covid['severity']
+        
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, shuffle=True, random_state=CONFIG['SEED'])
+        
+        # Segunda divisão: 33.33% do restante para T_lambda (25% do total), 66.67% restante
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, shuffle=True, random_state=CONFIG['SEED'])
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
 
-        df_covid = pd.read_csv('data/hospital2 (2).csv').drop(columns=['creatino.fosfoquinase.cpk.plasma.ck',
-                                                                        'troponina.i.plasma.troponina.i']) # 134 exemplos
-        X_temp, y_temp = df_covid.drop(columns=['severity']), df_covid['severity']
-        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
+        nmrc_cols = X_T.columns[1:]
+        scaler = SpecificScaler().fit(X_T, nmrc_cols)
 
-        nmrc_cols = X_train.columns[1:]
-        scaler = SpecificScaler().fit(X_train, nmrc_cols)
-
-        return X_train, X_val, X_test, y_train, y_val, y_test, scaler
+        return X_T, X_T_lambda, X_DSEL, X_G, y_T, y_T_lambda, y_DSEL, y_G, scaler
 
     elif(dataset=='airbnb'):
         df = pd.read_csv('data/listings.csv')
 
-        bathrooms = df['bathrooms_text'].str.extract('([0-9\.]+)?([- A-Za-z]+)')#[[0,2]]
+        bathrooms = df['bathrooms_text'].str.extract('([0-9\.]+)?([- A-Za-z]+)')
         bathrooms[1] = bathrooms[1].apply(lambda x: x if pd.isna(x) else x.strip().lower().replace('baths','bath'))
         bathrooms.columns = ['n_baths', 'bath_type']
 
@@ -294,14 +270,26 @@ def get_data(dataset:str):
         
         X, y = df.drop(columns=['price']), df['price'].astype(int)
 
-        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, shuffle=True, random_state=CONFIG['SEED'])
-        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, shuffle=True, random_state=CONFIG['SEED'])
+        
+        # Segunda divisão: 33.33% do restante para T_lambda (25% do total), 66.67% restante
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, shuffle=True, random_state=CONFIG['SEED'])
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, shuffle=True, random_state=CONFIG['SEED'])
 
         onehot = OneHotEncoder(handle_unknown='ignore', sparse_output=False)
         onehot = onehot.set_output(transform='pandas')
-        X_train = pd.concat([X_train.drop(columns=['property_type','room_type','bathroom_type']), onehot.fit_transform(X_train[['property_type','room_type','bathroom_type']], y_train)], axis=1)
-        X_val = pd.concat([X_val.drop(columns=['property_type','room_type','bathroom_type']), onehot.transform(X_val[['property_type','room_type','bathroom_type']])], axis=1)
-        X_test = pd.concat([X_test.drop(columns=['property_type','room_type','bathroom_type']), onehot.transform(X_test[['property_type','room_type','bathroom_type']])], axis=1)
+        
+        X_T = pd.concat([X_T.drop(columns=['property_type','room_type','bathroom_type']), 
+                         onehot.fit_transform(X_T[['property_type','room_type','bathroom_type']], y_T)], axis=1)
+        X_T_lambda = pd.concat([X_T_lambda.drop(columns=['property_type','room_type','bathroom_type']), 
+                                onehot.transform(X_T_lambda[['property_type','room_type','bathroom_type']])], axis=1)
+        X_DSEL = pd.concat([X_DSEL.drop(columns=['property_type','room_type','bathroom_type']), 
+                            onehot.transform(X_DSEL[['property_type','room_type','bathroom_type']])], axis=1)
+        X_G = pd.concat([X_G.drop(columns=['property_type','room_type','bathroom_type']), 
+                         onehot.transform(X_G[['property_type','room_type','bathroom_type']])], axis=1)
 
         nmrc_cols = ['host_response_time','host_response_rate','host_total_listings_count',
                     'latitude','longitude','accommodates','bathrooms','bedrooms','beds',
@@ -309,17 +297,23 @@ def get_data(dataset:str):
                     'review_scores_communication','review_scores_location',
                     'minimum_nights','maximum_nights','availability_30']
 
-        scaler = SpecificScaler().fit(X_train, nmrc_cols)
+        scaler = SpecificScaler().fit(X_T, nmrc_cols)
 
     elif(dataset=='heloc'):
         df = pd.read_csv('data/heloc_dataset_v1 (1).csv')
 
         X, y = df.drop(columns=['RiskPerformance']), df['RiskPerformance'].replace({'Bad':0, 'Good':1}).astype(int)
 
-        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, random_state=CONFIG['SEED'], shuffle=True)
-        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, random_state=CONFIG['SEED'], shuffle=True)
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Segunda divisão: 33.33% do restante para T_lambda (25% do total), 66.67% restante
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, random_state=CONFIG['SEED'], shuffle=True)
 
-        scaler = StandardScaler().fit(X_train)
+        scaler = StandardScaler().fit(X_T)
 
     elif(dataset=='covertype'):
         df = pd.read_csv('data/covertype.csv')
@@ -336,15 +330,21 @@ def get_data(dataset:str):
         X = df_sample.drop(columns=[target])
         y = df_sample[target].astype(int)-1
 
-        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, stratify=y, random_state=CONFIG['SEED'], shuffle=True)
-        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, stratify=y, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Segunda divisão: 33.33% do restante para T_lambda (25% do total), 66.67% restante
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, stratify=y_temp2, random_state=CONFIG['SEED'], shuffle=True)
 
         nmrc_cols = ['Elevation', 'Aspect', 'Slope', 'Horizontal_Distance_To_Hydrology',
                     'Vertical_Distance_To_Hydrology', 'Horizontal_Distance_To_Roadways',
                     'Hillshade_9am', 'Hillshade_Noon', 'Hillshade_3pm',
                     'Horizontal_Distance_To_Fire_Points']
         
-        scaler = StandardScaler().fit(X_train, nmrc_cols)
+        scaler = StandardScaler().fit(X_T, nmrc_cols)
 
     elif(dataset=='churn'):
         df = pd.read_csv(f'data/customer_churn_telecom_services.csv', header=0)
@@ -387,18 +387,24 @@ def get_data(dataset:str):
         X = df[cols]
         y = df['Churn']
 
-        X_train, X_temp, y_train, y_temp = train_test_split(X, y, test_size=0.67, stratify=y, random_state=CONFIG['SEED'], shuffle=True)
-        X_val, X_test, y_val, y_test = train_test_split(X_temp, y_temp, test_size=0.5, stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, stratify=y, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Segunda divisão: 33.33% do restante para T_lambda (25% do total), 66.67% restante
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, stratify=y_temp2, random_state=CONFIG['SEED'], shuffle=True)
 
-        scaler = SpecificScaler().fit(X_train, continuous_cols)
+        scaler = SpecificScaler().fit(X_T, continuous_cols)
 
         o_sampler = RandomOverSampler(random_state=CONFIG['SEED'])
-        X_train, y_train = o_sampler.fit_resample(X_train, y_train)
+        X_T, y_T = o_sampler.fit_resample(X_T, y_T)
 
     else:
         raise ValueError('Dataset Not Usable')
     
-    return X_train, X_val, X_test, y_train, y_val, y_test, scaler
+    return X_T, X_T_lambda, X_DSEL, X_G, y_T, y_T_lambda, y_DSEL, y_G, scaler
 
 # ======================================================
 
@@ -406,17 +412,26 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
 
     mlflow.set_experiment(experiment_name=experiment_name)
 
-    X_train, X_val, X_test, y_train, y_val, y_test, scaler = get_data(dataset)
-    X_train_norm = scaler.transform(X_train)
-    X_test_norm = scaler.transform(X_test)
+    # Obter os 4 subconjuntos
+    X_T, X_T_lambda, X_DSEL, X_G, y_T, y_T_lambda, y_DSEL, y_G, scaler = get_data(dataset)
+    
+    # Normalizar os dados
+    X_T_norm = scaler.transform(X_T)
+    X_T_lambda_norm = scaler.transform(X_T_lambda)
+    X_DSEL_norm = scaler.transform(X_DSEL)
+    X_G_norm = scaler.transform(X_G)
 
-    scorer_string = 'f1_macro' if len(set(y_train))>2 else 'f1'
-    num_cv_folds = 10 if len(X_train)>500 else 5
+    print(f"Tamanhos dos conjuntos:")
+    print(f"  T (Pool): {len(X_T)} amostras")
+    print(f"  T_lambda (Meta-treino): {len(X_T_lambda)} amostras")
+    print(f"  DSEL (Seleção dinâmica): {len(X_DSEL)} amostras")
+    print(f"  G (Teste): {len(X_G)} amostras")
 
-    # 1. Define an objective function to be maximized.
+    scorer_string = 'f1_macro' if len(set(y_T))>2 else 'f1'
+    num_cv_folds = 10 if len(X_T)>500 else 5
+
+    # Funções objetivo permanecem as mesmas, mas usam X_T e y_T
     def dtree_objective(trial:optuna.trial._trial.Trial):
-        
-        # 2. Suggest values for the hyperparameters using a trial object.
         max_depth = trial.suggest_int('max_depth', 5, 100, log=True)
         criterion = trial.suggest_categorical('criterion', ['gini', 'entropy', 'log_loss'])
         min_samples_split = trial.suggest_int('min_samples_split', 2, 60)
@@ -425,7 +440,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         clf = DecisionTreeClassifier(max_depth=max_depth, criterion=criterion,
                                     min_samples_split=min_samples_split,
                                     min_samples_leaf=min_samples_leaf)
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds).mean()
+        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds).mean()
         
         return score
 
@@ -443,23 +458,21 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def logreg_objective(trial):
-        #penalty = trial.suggest_categorical('penalty', ['l1', 'l2', 'elasticnet'])
         C = trial.suggest_float('C', 1e-3, 100, log=True)
         solver = trial.suggest_categorical('solver', ['lbfgs', 'liblinear', 'saga'])
         max_iter = trial.suggest_int('max_iter', 100, 1000)
         
-        # Ajusta solver baseado no penalty
         params = {
             'penalty': 'l2', 'C': C, 'solver': solver, 
             'max_iter': max_iter, 'random_state': CONFIG['SEED']
         }
         
         clf = LogisticRegression(**params)
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def knn_objective(trial):
@@ -473,7 +486,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             metric=metric, p=p
         )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def svm_linear_objective(trial):
@@ -484,7 +497,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             kernel='linear', C=C, max_iter=max_iter, random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def svm_poly_objective(trial):
@@ -499,7 +512,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             coef0=coef0, max_iter=max_iter, random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def svm_rbf_objective(trial):
@@ -511,18 +524,16 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             kernel='rbf', C=C, gamma=gamma, max_iter=max_iter, random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def mlp_objective(trial):
-        
         hidden_layer_sizes = trial.suggest_int('hidden_layer_sizes', 50, 500, step=5)
         activation = trial.suggest_categorical('activation', ['relu', 'tanh', 'logistic'])
         solver = trial.suggest_categorical('solver', ['adam', 'sgd'])
         alpha = trial.suggest_float('alpha', 1e-5, 1e-1, log=True)
         learning_rate = trial.suggest_categorical('learning_rate', ['constant', 'adaptive'])
         learning_rate_init = trial.suggest_float('learning_rate_init', 1e-4, 1e-2, log=True)
-        #max_iter = trial.suggest_int('max_iter', 200, 1000)
         
         clf = MLPClassifier(max_iter=10000, early_stopping=True, 
             n_iter_no_change=20, shuffle=True,
@@ -532,7 +543,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_train_norm, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def rf_objective(trial):
@@ -540,17 +551,15 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         max_depth = trial.suggest_int('max_depth', 5, 100, log=True)
         min_samples_split = trial.suggest_int('min_samples_split', 2, 60)
         min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 30)
-        #max_features = trial.suggest_categorical('max_features', ['sqrt', 'log2', None])
         criterion = trial.suggest_categorical('criterion', ['gini', 'entropy', 'log_loss'])
         
         clf = RandomForestClassifier(
             n_estimators=n_estimators, max_depth=max_depth, criterion=criterion,
             min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf,
-            #max_features=max_features, 
             random_state=CONFIG['SEED'], n_jobs=-1
         )
         
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def gb_objective(trial):
@@ -569,21 +578,19 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             max_features=max_features, random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def ada_objective(trial):
         n_estimators = trial.suggest_int('n_estimators', 50, 500, log=True)
         learning_rate = trial.suggest_float('learning_rate', 1e-3, 2, log=True)
-        #algorithm = trial.suggest_categorical('algorithm', ['SAMME', 'SAMME.R'])
         
         clf = AdaBoostClassifier(
             n_estimators=n_estimators, learning_rate=learning_rate,
-            #algorithm=algorithm, 
             random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
         return score.mean()
 
     def xgb_objective(trial):
@@ -592,27 +599,24 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         max_depth = trial.suggest_int('max_depth', 3, 20)
         min_child_weight = trial.suggest_int('min_child_weight', 1, 10)
         gamma = trial.suggest_float('gamma', 0, 5)
-        #subsample = trial.suggest_float('subsample', 0.5, 1.0)
-        #colsample_bytree = trial.suggest_float('colsample_bytree', 0.5, 1.0)
         reg_alpha = trial.suggest_float('reg_alpha', 1e-5, 100, log=True)
         reg_lambda = trial.suggest_float('reg_lambda', 1e-5, 100, log=True)
         
         clf = XGBClassifier(
             n_estimators=n_estimators, learning_rate=learning_rate,
             max_depth=max_depth, min_child_weight=min_child_weight,
-            gamma=gamma, #1subsample=subsample, colsample_bytree=colsample_bytree,
-            reg_alpha=reg_alpha, reg_lambda=reg_lambda, 
+            gamma=gamma, reg_alpha=reg_alpha, reg_lambda=reg_lambda, 
             random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss'
         )
         
-        score = cross_val_score(clf, X_train, y_train, scoring=scorer_string, n_jobs=1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=1, cv=num_cv_folds)
         return score.mean()
 
     # ============================================
 
     loaded_models = {}
 
-    # 3. Create a study object and optimize the objective function.
+    # Treinamento dos modelos usando T (pool)
     model_name = 'Decision_Tree'
     try:
         loaded_models[model_name] = load_model_by_name(experiment_name=experiment_name, run_name=model_name)[0]
@@ -620,10 +624,10 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         dtree_study = optuna.create_study(direction='maximize')
         dtree_study.optimize(dtree_objective, n_trials=num_trials)
         dtree_params = dtree_study.best_params
-        loaded_models[model_name] = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
+        loaded_models[model_name] = DecisionTreeClassifier(**dtree_params, random_state=CONFIG['SEED']).fit(X_T, y_T)
         log_model_to_mlflow(
             loaded_models[model_name], model_name, dtree_params, 
-            X_train, y_train, X_test, y_test
+            X_T, y_T, X_G, y_G
         )
 
     model_name = 'SGD'
@@ -635,11 +639,11 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         sgd_params = sgd_study.best_params
         loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', SGDClassifier(**sgd_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
+            ('clf', SGDClassifier(**sgd_params, random_state=CONFIG['SEED']).fit(X_T_norm, y_T))
         ])
-        loaded_models[model_name] = log_model_to_mlflow(
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, sgd_params,
-            X_train_norm, y_train, X_test_norm, y_test
+            X_T_norm, y_T, X_G_norm, y_G
         )
 
     model_name = 'Logistic_Regression'
@@ -651,11 +655,11 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         logreg_params = logreg_study.best_params
         loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', LogisticRegression(**logreg_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
+            ('clf', LogisticRegression(**logreg_params, random_state=CONFIG['SEED']).fit(X_T_norm, y_T))
         ])
-        loaded_models[model_name] = log_model_to_mlflow(
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, logreg_params,
-            X_train, y_train, X_test_norm, y_test
+            X_T_norm, y_T, X_G_norm, y_G
         )
 
     model_name = 'KNN'
@@ -667,11 +671,11 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         knn_params = knn_study.best_params
         loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', KNeighborsClassifier(**knn_params).fit(X_train_norm, y_train))
+            ('clf', KNeighborsClassifier(**knn_params).fit(X_T_norm, y_T))
         ])
-        loaded_models[model_name] = log_model_to_mlflow(
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, knn_params,
-            X_train_norm, y_train, X_test_norm, y_test
+            X_T_norm, y_T, X_G_norm, y_G
         )
 
     model_name = 'SVM_Linear'
@@ -683,11 +687,11 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         svm_linear_params = svm_linear_study.best_params
         loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
+            ('clf', SVC(kernel='linear', **svm_linear_params, random_state=CONFIG['SEED'], probability=True).fit(X_T_norm, y_T))
         ])
-        loaded_models[model_name] = log_model_to_mlflow(
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, svm_linear_params,
-            X_train, y_train, X_test_norm, y_test
+            X_T_norm, y_T, X_G_norm, y_G
         )
 
     model_name = 'SVM_Polynomial'
@@ -699,11 +703,11 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         svm_poly_params = svm_poly_study.best_params
         loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
+            ('clf', SVC(kernel='poly', **svm_poly_params, random_state=CONFIG['SEED'], probability=True).fit(X_T_norm, y_T))
         ])
-        loaded_models[model_name] = log_model_to_mlflow(
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, svm_poly_params,
-            X_train_norm, y_train, X_test_norm, y_test
+            X_T_norm, y_T, X_G_norm, y_G
         )
 
     model_name = 'SVM_RBF'
@@ -715,11 +719,11 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         svm_rbf_params = svm_rbf_study.best_params
         loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True).fit(X_train_norm, y_train))
+            ('clf', SVC(kernel='rbf', **svm_rbf_params, random_state=CONFIG['SEED'], probability=True).fit(X_T_norm, y_T))
         ])
-        loaded_models[model_name] = log_model_to_mlflow(
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, svm_rbf_params,
-            X_train_norm, y_train, X_test_norm, y_test
+            X_T_norm, y_T, X_G_norm, y_G
         )
 
     model_name = 'MLP'
@@ -732,11 +736,11 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         mlp_params['hidden_layer_sizes'] = (mlp_params['hidden_layer_sizes'],)
         loaded_models[model_name] = Pipeline([
             ('scaler', scaler),
-            ('clf', MLPClassifier(**mlp_params, random_state=CONFIG['SEED']).fit(X_train_norm, y_train))
+            ('clf', MLPClassifier(**mlp_params, random_state=CONFIG['SEED']).fit(X_T_norm, y_T))
         ])
-        loaded_models[model_name] = log_model_to_mlflow(
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, mlp_params,
-            X_train_norm, y_train, X_test_norm, y_test
+            X_T_norm, y_T, X_G_norm, y_G
         )
 
     model_name = 'Random_Forest'
@@ -746,10 +750,10 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         rf_study = optuna.create_study(direction='maximize')
         rf_study.optimize(rf_objective, n_trials=num_trials)
         rf_params = rf_study.best_params
-        loaded_models[model_name] = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1).fit(X_train, y_train)
-        loaded_models[model_name] = log_model_to_mlflow(
+        loaded_models[model_name] = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1).fit(X_T, y_T)
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, rf_params,
-            X_train, y_train, X_test, y_test
+            X_T, y_T, X_G, y_G
         )
 
     model_name = 'Gradient_Boosting'
@@ -759,10 +763,10 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         gb_study = optuna.create_study(direction='maximize')
         gb_study.optimize(gb_objective, n_trials=num_trials)
         gb_params = gb_study.best_params
-        loaded_models[model_name] = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
-        loaded_models[model_name] = log_model_to_mlflow(
+        loaded_models[model_name] = GradientBoostingClassifier(**gb_params, random_state=CONFIG['SEED']).fit(X_T, y_T)
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, gb_params,
-            X_train, y_train, X_test, y_test
+            X_T, y_T, X_G, y_G
         )
 
     model_name = 'AdaBoost'
@@ -772,10 +776,10 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         ada_study = optuna.create_study(direction='maximize')
         ada_study.optimize(ada_objective, n_trials=num_trials)
         ada_params = ada_study.best_params
-        loaded_models[model_name] = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED']).fit(X_train, y_train)
-        loaded_models[model_name] = log_model_to_mlflow(
+        loaded_models[model_name] = AdaBoostClassifier(**ada_params, random_state=CONFIG['SEED']).fit(X_T, y_T)
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, ada_params,
-            X_train, y_train, X_test, y_test
+            X_T, y_T, X_G, y_G
         )
 
     model_name = 'XGBoost'
@@ -785,47 +789,50 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         xgb_study = optuna.create_study(direction='maximize')
         xgb_study.optimize(xgb_objective, n_trials=num_trials)
         xgb_params = xgb_study.best_params
-        loaded_models[model_name] = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True).fit(X_train, y_train)
-        loaded_models[model_name] = log_model_to_mlflow(
+        loaded_models[model_name] = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True).fit(X_T, y_T)
+        log_model_to_mlflow(
             loaded_models[model_name], model_name, xgb_params,
-            X_train, y_train, X_test, y_test
+            X_T, y_T, X_G, y_G
         )
 
-    # METADES
+    # METADES - treina em T_lambda (meta-treinamento) e valida em DSEL
     pool_classifiers = list(loaded_models.values())
 
     try:
         metades = load_model_by_name(experiment_name=experiment_name, run_name='METADES')[0]
     except ValueError:
-        # Juro que tentei fazer HPO no META-DES mas essa DESLib é QUEBRADA e eu não aguento mais tentar fazer isso funcionar
-        #mdes_study = optuna.create_study(direction='maximize')
-        #mdes_study.optimize(mdes_objective, n_trials=num_trials)
-        #mdes_params = mdes_study.best_params
-        metades = METADES(pool_classifiers, random_state=CONFIG['SEED']).fit(X_val, y_val)
+        metades = METADES(pool_classifiers, random_state=CONFIG['SEED']).fit(X_T_lambda, y_T_lambda)
         mdes_params = metades.get_params()
         mdes_params.pop('pool_classifiers')
         log_model_to_mlflow(
             metades, "METADES", mdes_params,
-            X_val, y_val, X_test, y_test
+            X_DSEL, y_DSEL, X_G, y_G
         )
 
     try:
         metadesr = load_model_by_name(experiment_name=experiment_name, run_name='METADESR')[0]
     except ValueError:
-        # Juro que tentei fazer HPO no META-DES mas essa DESLib é QUEBRADA e eu não aguento mais tentar fazer isso funcionar
-        #mdes_study = optuna.create_study(direction='maximize')
-        #mdes_study.optimize(mdes_objective, n_trials=num_trials)
-        #mdes_params = mdes_study.best_params
-        metadesr = METADESR(pool_classifiers, random_state=CONFIG['SEED']).fit(X_val, y_val)
+        metadesr = METADESR(pool_classifiers, random_state=CONFIG['SEED']).fit(X_T_lambda, y_T_lambda)
         mdesr_params = metadesr.get_params()
         mdesr_params.pop('pool_classifiers')
         log_model_to_mlflow(
             metadesr, "METADESR", mdesr_params,
-            X_val, y_val, X_test, y_test
+            X_DSEL, y_DSEL, X_G, y_G
         )
 
     if(load):
-        return {'pool_classifiers': loaded_models, 'METADES': metades, 'METADESR': metadesr}
+        return {
+            'pool_classifiers': loaded_models, 
+            'METADES': metades, 
+            'METADESR': metadesr,
+            'data_splits': {
+                'X_T': X_T, 'y_T': y_T,
+                'X_T_lambda': X_T_lambda, 'y_T_lambda': y_T_lambda,
+                'X_DSEL': X_DSEL, 'y_DSEL': y_DSEL,
+                'X_G': X_G, 'y_G': y_G,
+                'scaler': scaler
+            }
+        }
 
 def getExpName(dataset):
     global CONFIG
@@ -834,8 +841,7 @@ def getExpName(dataset):
 
 if(__name__=='__main__'):
     NUM_TRIALS = 25
-    #DATASET = 'circles'
-    for DATASET in ['twomoons','circles','aniso','blobs','varied','covid','airbnb','heloc','churn']: #'covertype'
+    for DATASET in ['twomoons']:
         experiment_name = getExpName(DATASET)
 
         searchAndTrain(dataset=DATASET, 

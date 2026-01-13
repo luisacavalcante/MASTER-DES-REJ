@@ -342,8 +342,9 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
     Information Fusion, vol. 41, pp. 195 – 216, 2018.
 
     """
-    def __init__(self, pool_classifiers=None, meta_classifier=None, k=7, Kp=5, Hc=1, selection_threshold=0.5, rejection_threshold=0.5,  DFP=False, with_IH=False, safe_k=None, IH_rate=0.3, random_state=None, knn_classifier='knn', knne=False, knn_metric='minkowski', DSEL_perc=0.5, n_jobs=-1, voting='hard'):
+    def __init__(self, pool_classifiers=None, meta_classifier=None, k=7, Kp=5, Hc=1, selection_threshold=0.5, rejection_threshold=0.5,  DFP=False, with_IH=False, safe_k=None, IH_rate=0.3, random_state=None, knn_classifier='knn', knne=False, knn_metric='minkowski', DSEL_perc=0.5, n_jobs=-1, voting='soft', rejection_method='median'):
         super().__init__(pool_classifiers, meta_classifier, k, Kp, Hc, selection_threshold, 'selection', DFP, with_IH, safe_k, IH_rate, random_state, knn_classifier, knne, knn_metric, DSEL_perc, n_jobs, voting)
+        self.rejection_method = rejection_method
         self.rejection_threshold = rejection_threshold
 
     def _validate_parameters(self):
@@ -455,8 +456,8 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
                 probas[inds] = probas_ds
 
         # Rejection by uncertainty
-        rej_indices = (1 - probas.max(axis=1)) > self.rejection_threshold
-        probas[rej_indices] = np.full(shape=probas.shape[1], fill_value=np.nan)
+        #rej_indices = (1 - probas.max(axis=1)) > self.rejection_threshold
+        #probas[rej_indices] = np.full(shape=probas.shape[1], fill_value=np.nan)
         return probas
 
     def classify_with_ds(self, predictions, probabilities=None,
@@ -533,15 +534,25 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
 
         # Rejection by model competence
         selected_classifiers = (competences > self.selection_threshold)
+        match self.rejection_method:
+            case 'median':
+                competences = np.median(competences, axis=1)
+            case 'max':
+                competences = np.max(competences, axis=1)
+            case 'min':
+                competences = np.min(competences, axis=1)
+            case _:
+                competences = np.mean(competences, axis=1)
+        selected_instances = (competences > self.selection_threshold)
         # For the rows that are all False (i.e., no base classifier was
         # selected, select all classifiers (all True)
         #selected_classifiers[~np.any(selected_classifiers, axis=1), :] = True # < Desligado
 
-        return selected_classifiers
+        return selected_classifiers, selected_instances
     
     def _dynamic_selection(self, competences, predictions, probabilities):
         """ Combine models using dynamic ensemble selection. """
-        selected_classifiers = self.select(competences)
+        selected_classifiers, selected_instances = self.select(competences)
         if self.voting == 'hard':
             votes = np.ma.MaskedArray(predictions, ~selected_classifiers)
             votes = sum_votes_per_class(votes, self.n_classes_)
@@ -549,12 +560,21 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
         else:
             masked_proba = self._mask_proba(probabilities,
                                             selected_classifiers)
-            predicted_proba = np.mean(masked_proba, axis=1)
+            #match self.rejection_method:
+            #    case 'median':
+            #        predicted_proba = np.median(masked_proba, axis=1)
+            #    case 'max':
+            #        predicted_proba = np.max(masked_proba, axis=1)
+            #    case 'min':
+            #        predicted_proba = np.min(masked_proba, axis=1)
+            #    case _: # average/mean
+            #        predicted_proba = np.mean(masked_proba, axis=1)
+            predicted_proba = np.ma.MaskedArray(np.mean(masked_proba, axis=1), ~selected_instances)
         return predicted_proba
     
     def _hybrid(self, competences, predictions, probabilities):
         """ Combine models using a hybrid dynamic selection + weighting. """
-        selected_classifiers = self.select(competences)
+        selected_classifiers, selected_instances = self.select(competences)
         if self.voting == 'hard':
             votes = np.ma.MaskedArray(predictions, ~selected_classifiers)
             w_votes, _ = get_weighted_votes(votes, competences,
@@ -565,6 +585,7 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
                                             selected_classifiers)
             predicted_proba = aggregate_proba_ensemble_weighted(
                 masked_proba, competences)
+            predicted_proba = np.ma.MaskedArray(predicted_proba, ~selected_instances)
         return predicted_proba
     
     def set_thresholds(self, rejection_threshold:float=None, selection_threshold:float=None):
