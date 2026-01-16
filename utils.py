@@ -107,3 +107,45 @@ def rejection_overhall_metades(model, x, y, rej_thresholds, selection_thresholds
             pbar.update(1)
 
     return results_log#, rejection_history
+
+def rejection_overhall_metadesr(model, x, y, reject_rates, selection_thresholds:list[float]=[0.5], methods=['avg','median','min','max']):
+    results_log = pd.DataFrame(columns=['Rejection Rate','BM Selection Threshold','Method','Accuracy','Precision','Recall','F1-Score'])
+    rejection_history = pd.DataFrame(columns=['idx','Rejection Rate','BM Selection Threshold','Method'])
+    
+    reject_rates = np.asarray(reject_rates)
+    if(any(reject_rates<0) or any(reject_rates>1)):
+        raise ValueError("Apenas valores entre 0 e 1")
+    if(isinstance(y, pd.DataFrame) or isinstance(y, pd.Series)):
+        y = y.values
+    total_iterations = len(selection_thresholds) * len(reject_rates) * len(methods)
+
+    with tqdm(total=total_iterations, desc="Processing") as pbar:
+        for method, rej_rate, sel_thresh in product(methods, reject_rates, selection_thresholds):
+            model.set_thresholds(selection_threshold=sel_thresh)
+            model.rejection_method = method
+            model.reject_rate = rej_rate
+            y_pred = model.predict(x)
+
+            idx_rej = np.isnan(y_pred)#.index
+            idx = ~idx_rej
+            rejected = rejection_history.loc[(rejection_history['Method']==method)&(rejection_history['BM Selection Threshold']==sel_thresh),'idx']
+            idx_rej = list(set(idx_rej) - set(rejected))
+            for i in range(len(idx_rej)):
+                rejection_history.loc[rejection_history.shape[0],:] = [idx_rej[i], rej_rate, sel_thresh, method]
+            
+            if(len(idx)>0):
+                acc = accuracy_score(y[idx], y_pred[idx])
+                if(len(set(y))>2):
+                    pre = precision_score(y[idx], y_pred[idx], zero_division=0, average='macro')
+                    rec = recall_score(y[idx], y_pred[idx], zero_division=0, average='macro')
+                    f1s = f1_score(y[idx], y_pred[idx], zero_division=0, average='macro')
+                else:
+                    pre = precision_score(y[idx], y_pred[idx], zero_division=0)
+                    rec = recall_score(y[idx], y_pred[idx], zero_division=0)
+                    f1s = f1_score(y[idx], y_pred[idx], zero_division=0)
+                results_log.loc[results_log.shape[0]] = [rej_rate,sel_thresh,method,acc,pre,rec,f1s]
+                
+            pbar.set_postfix({'Rejection by Uncertainty': f'{100*rej_rate:.2f}%', 'Selection by Competence': f'{sel_thresh:.2f}', 'Method': method})
+            pbar.update(1)
+
+    return results_log, rejection_history

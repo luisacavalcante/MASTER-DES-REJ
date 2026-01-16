@@ -6,6 +6,7 @@ import mlflow
 import mlflow.sklearn
 import optuna
 from sklearn.pipeline import Pipeline
+from sklearn.preprocessing import LabelEncoder
 from classes import SpecificScaler
 from sklearn.datasets import make_moons, make_circles, make_blobs
 from sklearn.model_selection import train_test_split
@@ -401,6 +402,176 @@ def get_data(dataset:str):
         o_sampler = RandomOverSampler(random_state=CONFIG['SEED'])
         X_T, y_T = o_sampler.fit_resample(X_T, y_T)
 
+    elif(dataset=='adult'):
+        # UCI Adult Dataset - Predição de renda (>50K ou <=50K)
+        df = pd.read_csv('data/adult.csv')
+        
+        # Remove espaços extras das colunas categóricas
+        cat_cols = ['workclass', 'education', 'marital-status', 'occupation', 
+                    'relationship', 'race', 'sex', 'native-country']
+        for col in cat_cols:
+            df[col] = df[col].str.strip()
+        
+        # Remove linhas com valores faltantes (marcados como '?')
+        df = df.replace('?', np.nan).dropna()
+        
+        # Target: target >50K (1) ou <=50K (0)
+        y = (df['target'].str.strip() == '>50K').astype(int)
+        X = df.drop(columns=['target'])
+        
+        # Label encoding para variáveis categóricas
+        label_encoders = {}
+        for col in cat_cols:
+            le = LabelEncoder()
+            X[col] = le.fit_transform(X[col])
+            label_encoders[col] = le
+        
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, stratify=y, 
+                                                     random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Segunda divisão: 33.33% do restante para T_lambda
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, 
+                                                                     stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, 
+                                                     stratify=y_temp2, random_state=CONFIG['SEED'], shuffle=True)
+        
+        nmrc_cols = ['age', 'fnlwgt', 'education-num', 'capital-gain', 'capital-loss', 'hours-per-week']
+        scaler = SpecificScaler().fit(X_T, nmrc_cols)
+
+    elif(dataset=='magic_gamma'):
+        # UCI MAGIC Gamma Telescope - Classificação de raios gamma vs hadrons
+        df = pd.read_csv('data/magic04.data', names=[
+            'fLength', 'fWidth', 'fSize', 'fConc', 'fConc1', 'fAsym', 
+            'fM3Long', 'fM3Trans', 'fAlpha', 'fDist', 'class'
+        ])
+        
+        # Target: gamma (1) vs hadron (0)
+        y = (df['class'] == 'g').astype(int)
+        X = df.drop(columns=['class'])
+        
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, stratify=y, 
+                                                     random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Segunda divisão: 33.33% do restante para T_lambda
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, 
+                                                                     stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, 
+                                                     stratify=y_temp2, random_state=CONFIG['SEED'], shuffle=True)
+        
+        scaler = StandardScaler().fit(X_T)
+
+    elif(dataset=='credit'):
+        # UCI Default of Credit Card Clients
+        df = pd.read_csv('data/default_credit_card.csv', header=1)
+        
+        # Target: default payment (1=yes, 0=no)
+        y = df['default payment next month']
+        X = df.drop(columns=['ID', 'default payment next month'])
+        
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, stratify=y, 
+                                                     random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Segunda divisão: 33.33% do restante para T_lambda
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, 
+                                                                     stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, 
+                                                     stratify=y_temp2, random_state=CONFIG['SEED'], shuffle=True)
+        
+        scaler = StandardScaler().fit(X_T)
+        
+        # Oversampling para balancear classes
+        o_sampler = RandomOverSampler(random_state=CONFIG['SEED'])
+        X_T, y_T = o_sampler.fit_resample(X_T, y_T)
+
+    elif(dataset=='marketing'):
+        # UCI Bank Marketing Dataset
+        df = pd.read_csv('data/bank-additional-full.csv', sep=';')
+        
+        # Target: subscribed to term deposit (yes=1, no=0)
+        y = (df['y'] == 'yes').astype(int)
+        X = df.drop(columns=['y'])
+        
+        # Codificação de variáveis categóricas
+        cat_cols = X.select_dtypes(include=['object']).columns.tolist()
+        
+        for col in cat_cols:
+            le = LabelEncoder()
+            X[col] = le.fit_transform(X[col])
+        
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, stratify=y, 
+                                                     random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Segunda divisão: 33.33% do restante para T_lambda
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, 
+                                                                     stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, 
+                                                     stratify=y_temp2, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Escalar apenas colunas numéricas originais
+        nmrc_cols = ['age', 'duration', 'campaign', 'pdays', 'previous', 
+                     'emp.var.rate', 'cons.price.idx', 'cons.conf.idx', 'euribor3m', 'nr.employed']
+        scaler = SpecificScaler().fit(X_T, nmrc_cols)
+        
+        # Oversampling para balancear classes
+        o_sampler = RandomOverSampler(random_state=CONFIG['SEED'])
+        X_T, y_T = o_sampler.fit_resample(X_T, y_T)
+
+    elif(dataset=='qsar'):
+        # UCI QSAR Biodegradation Dataset
+        df = pd.read_csv('data/biodeg.csv', sep=';')
+        
+        # Target: ready biodegradable (RB=1) vs not ready biodegradable (NRB=0)
+        y = (df['experimental class'] == 'RB').astype(int)
+        X = df.drop(columns=['experimental class'])
+        
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, stratify=y, 
+                                                     random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Segunda divisão: 33.33% do restante para T_lambda
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, 
+                                                                     stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, 
+                                                     stratify=y_temp2, random_state=CONFIG['SEED'], shuffle=True)
+        
+        scaler = StandardScaler().fit(X_T)
+
+    elif(dataset=='drive'):
+        # UCI Sensorless Drive Diagnosis Dataset
+        df = pd.read_csv('data/Sensorless_drive_diagnosis.txt', sep=' ', header=None)
+        
+        # Target: tipo de falha (última coluna, convertida para 0-indexed)
+        y = df.iloc[:, -1] - 1
+        X = df.iloc[:, :-1]
+        
+        # Primeira divisão: 25% para T, 75% restante
+        X_T, X_temp, y_T, y_temp = train_test_split(X, y, test_size=0.75, stratify=y, 
+                                                     random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Segunda divisão: 33.33% do restante para T_lambda
+        X_T_lambda, X_temp2, y_T_lambda, y_temp2 = train_test_split(X_temp, y_temp, test_size=0.6667, 
+                                                                     stratify=y_temp, random_state=CONFIG['SEED'], shuffle=True)
+        
+        # Terceira divisão: 50% do restante para DSEL e 50% para G
+        X_DSEL, X_G, y_DSEL, y_G = train_test_split(X_temp2, y_temp2, test_size=0.5, 
+                                                     stratify=y_temp2, random_state=CONFIG['SEED'], shuffle=True)
+        
+        scaler = StandardScaler().fit(X_T)
+
     else:
         raise ValueError('Dataset Not Usable')
     
@@ -440,7 +611,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         clf = DecisionTreeClassifier(max_depth=max_depth, criterion=criterion,
                                     min_samples_split=min_samples_split,
                                     min_samples_leaf=min_samples_leaf)
-        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds).mean()
+        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds).mean()
         
         return score
 
@@ -458,7 +629,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def logreg_objective(trial):
@@ -472,7 +643,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         }
         
         clf = LogisticRegression(**params)
-        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def knn_objective(trial):
@@ -486,7 +657,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             metric=metric, p=p
         )
         
-        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def svm_linear_objective(trial):
@@ -497,7 +668,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             kernel='linear', C=C, max_iter=max_iter, random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def svm_poly_objective(trial):
@@ -512,7 +683,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             coef0=coef0, max_iter=max_iter, random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def svm_rbf_objective(trial):
@@ -524,7 +695,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             kernel='rbf', C=C, gamma=gamma, max_iter=max_iter, random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def mlp_objective(trial):
@@ -543,7 +714,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T_norm, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def rf_objective(trial):
@@ -556,10 +727,10 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         clf = RandomForestClassifier(
             n_estimators=n_estimators, max_depth=max_depth, criterion=criterion,
             min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf,
-            random_state=CONFIG['SEED'], n_jobs=-1
+            random_state=CONFIG['SEED'], n_jobs=CONFIG['NUM_WORKERS']
         )
         
-        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def gb_objective(trial):
@@ -578,7 +749,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             max_features=max_features, random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def ada_objective(trial):
@@ -590,7 +761,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             random_state=CONFIG['SEED']
         )
         
-        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=-1, cv=num_cv_folds)
+        score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=CONFIG['NUM_WORKERS'], cv=num_cv_folds)
         return score.mean()
 
     def xgb_objective(trial):
@@ -606,7 +777,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             n_estimators=n_estimators, learning_rate=learning_rate,
             max_depth=max_depth, min_child_weight=min_child_weight,
             gamma=gamma, reg_alpha=reg_alpha, reg_lambda=reg_lambda, 
-            random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss'
+            random_state=CONFIG['SEED'], n_jobs=CONFIG['NUM_WORKERS'], eval_metric='logloss'
         )
         
         score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=1, cv=num_cv_folds)
@@ -750,7 +921,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         rf_study = optuna.create_study(direction='maximize')
         rf_study.optimize(rf_objective, n_trials=num_trials)
         rf_params = rf_study.best_params
-        loaded_models[model_name] = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=-1).fit(X_T, y_T)
+        loaded_models[model_name] = RandomForestClassifier(**rf_params, random_state=CONFIG['SEED'], n_jobs=CONFIG['NUM_WORKERS']).fit(X_T, y_T)
         log_model_to_mlflow(
             loaded_models[model_name], model_name, rf_params,
             X_T, y_T, X_G, y_G
@@ -789,7 +960,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         xgb_study = optuna.create_study(direction='maximize')
         xgb_study.optimize(xgb_objective, n_trials=num_trials)
         xgb_params = xgb_study.best_params
-        loaded_models[model_name] = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=-1, eval_metric='logloss', enable_categorical=True).fit(X_T, y_T)
+        loaded_models[model_name] = XGBClassifier(**xgb_params, random_state=CONFIG['SEED'], n_jobs=CONFIG['NUM_WORKERS'], eval_metric='logloss', enable_categorical=True).fit(X_T, y_T)
         log_model_to_mlflow(
             loaded_models[model_name], model_name, xgb_params,
             X_T, y_T, X_G, y_G
@@ -801,7 +972,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
     try:
         metades = load_model_by_name(experiment_name=experiment_name, run_name='METADES')[0]
     except ValueError:
-        metades = METADES(pool_classifiers, random_state=CONFIG['SEED']).fit(X_T_lambda, y_T_lambda)
+        metades = METADES(pool_classifiers, random_state=CONFIG['SEED'], voting='soft').fit(X_T_lambda, y_T_lambda)
         mdes_params = metades.get_params()
         mdes_params.pop('pool_classifiers')
         log_model_to_mlflow(
@@ -812,7 +983,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
     try:
         metadesr = load_model_by_name(experiment_name=experiment_name, run_name='METADESR')[0]
     except ValueError:
-        metadesr = METADESR(pool_classifiers, random_state=CONFIG['SEED']).fit(X_T_lambda, y_T_lambda)
+        metadesr = METADESR(pool_classifiers, random_state=CONFIG['SEED'], voting='soft').fit(X_T_lambda, y_T_lambda)
         mdesr_params = metadesr.get_params()
         mdesr_params.pop('pool_classifiers')
         log_model_to_mlflow(
@@ -824,14 +995,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         return {
             'pool_classifiers': loaded_models, 
             'METADES': metades, 
-            'METADESR': metadesr,
-            'data_splits': {
-                'X_T': X_T, 'y_T': y_T,
-                'X_T_lambda': X_T_lambda, 'y_T_lambda': y_T_lambda,
-                'X_DSEL': X_DSEL, 'y_DSEL': y_DSEL,
-                'X_G': X_G, 'y_G': y_G,
-                'scaler': scaler
-            }
+            'METADESR': metadesr
         }
 
 def getExpName(dataset):
@@ -841,7 +1005,7 @@ def getExpName(dataset):
 
 if(__name__=='__main__'):
     NUM_TRIALS = 25
-    for DATASET in ['twomoons']:
+    for DATASET in ['qsar', 'adult', 'magic_gamma', 'credit', 'marketing', 'drive']:
         experiment_name = getExpName(DATASET)
 
         searchAndTrain(dataset=DATASET, 

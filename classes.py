@@ -342,10 +342,11 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
     Information Fusion, vol. 41, pp. 195 – 216, 2018.
 
     """
-    def __init__(self, pool_classifiers=None, meta_classifier=None, k=7, Kp=5, Hc=1, selection_threshold=0.5, rejection_threshold=0.5,  DFP=False, with_IH=False, safe_k=None, IH_rate=0.3, random_state=None, knn_classifier='knn', knne=False, knn_metric='minkowski', DSEL_perc=0.5, n_jobs=-1, voting='soft', rejection_method='median'):
+    def __init__(self, pool_classifiers=None, meta_classifier=None, k=7, Kp=5, Hc=1, selection_threshold=0.5, rejection_threshold=0.5,  DFP=False, with_IH=False, safe_k=None, IH_rate=0.3, random_state=None, knn_classifier='knn', knne=False, knn_metric='minkowski', DSEL_perc=0.5, n_jobs=-1, voting='soft', rejection_method='median', reject_rate=0):
         super().__init__(pool_classifiers, meta_classifier, k, Kp, Hc, selection_threshold, 'selection', DFP, with_IH, safe_k, IH_rate, random_state, knn_classifier, knne, knn_metric, DSEL_perc, n_jobs, voting)
         self.rejection_method = rejection_method
         self.rejection_threshold = rejection_threshold
+        self.reject_rate = reject_rate
 
     def _validate_parameters(self):
         """Check if the parameters passed as argument are correct.
@@ -435,10 +436,10 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
         self._check_predict_proba()
         probas = np.zeros((X.shape[0], self.n_classes_))
         base_preds, base_probas = self._preprocess_predictions(X, True)
-        # predict all agree
-        ind_disagreement, ind_all_agree = self._split_agreement(base_preds)
-        if ind_all_agree.size:
-            probas[ind_all_agree] = base_probas[ind_all_agree].mean(axis=1)
+        # predict all agree # TODOS OS ÍNDICES SERÃO CONSIDERADOS PARA O PREDICT COM IH
+        ind_disagreement = np.asarray(list(range(len(base_preds))))#, ind_all_agree = self._split_agreement(base_preds) 
+        #if ind_all_agree.size:
+        #    probas[ind_all_agree] = base_probas[ind_all_agree].mean(axis=1)
         # predict with IH
         if ind_disagreement.size:
             distances, ind_ds_classifier, neighbors = self._IH_prediction(
@@ -543,16 +544,20 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
                 competences = np.min(competences, axis=1)
             case _:
                 competences = np.mean(competences, axis=1)
-        selected_instances = (competences > self.selection_threshold)
+
+        #selected_instances = np.zeros(competences.shape, dtype=bool)
+        k = int(self.reject_rate*len(competences))
+        selected_instances_idx = np.argsort(competences)[:k]
+        
         # For the rows that are all False (i.e., no base classifier was
         # selected, select all classifiers (all True)
-        #selected_classifiers[~np.any(selected_classifiers, axis=1), :] = True # < Desligado
+        selected_classifiers[~np.any(selected_classifiers, axis=1), :] = True # < Ligado
 
-        return selected_classifiers, selected_instances
+        return selected_classifiers, selected_instances_idx
     
     def _dynamic_selection(self, competences, predictions, probabilities):
         """ Combine models using dynamic ensemble selection. """
-        selected_classifiers, selected_instances = self.select(competences)
+        selected_classifiers, selected_instances_idx = self.select(competences)
         if self.voting == 'hard':
             votes = np.ma.MaskedArray(predictions, ~selected_classifiers)
             votes = sum_votes_per_class(votes, self.n_classes_)
@@ -569,7 +574,11 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
             #        predicted_proba = np.min(masked_proba, axis=1)
             #    case _: # average/mean
             #        predicted_proba = np.mean(masked_proba, axis=1)
-            predicted_proba = np.ma.MaskedArray(np.mean(masked_proba, axis=1), ~selected_instances)
+            predicted_proba = np.mean(masked_proba, axis=1)
+            #rejection_mask = np.zeros(predicted_proba.shape, dtype=bool)
+            #rejection_mask[selected_instances_idx] = [True]*predicted_proba.shape[1]
+            #predicted_proba.mask |= rejection_mask
+            predicted_proba[selected_instances_idx] = np.nan
         return predicted_proba
     
     def _hybrid(self, competences, predictions, probabilities):
