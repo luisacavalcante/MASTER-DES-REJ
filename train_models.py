@@ -980,15 +980,46 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             X_DSEL, y_DSEL, X_G, y_G
         )
 
+    def mdesr_objective(trial):
+        k = trial.suggest_int('k', 3, 25, log=True)
+        kp = trial.suggest_int('Kp', 3, 25, log=True)
+
+        n_estimators = trial.suggest_int('n_estimators', 10, 500, log=True)
+        max_depth = trial.suggest_int('max_depth', 5, 100, log=True)
+        min_samples_split = trial.suggest_int('min_samples_split', 2, 60)
+        min_samples_leaf = trial.suggest_int('min_samples_leaf', 1, 30)
+        criterion = trial.suggest_categorical('criterion', ['gini', 'entropy', 'log_loss'])
+        
+        meta_clf = RandomForestClassifier(
+            n_estimators=n_estimators, max_depth=max_depth, criterion=criterion,
+            min_samples_split=min_samples_split, min_samples_leaf=min_samples_leaf,
+            random_state=CONFIG['SEED'], n_jobs=CONFIG['NUM_WORKERS']
+        )
+
+        clf = METADESR(pool_classifiers, meta_classifier=meta_clf, k=k, Kp=kp, random_state=CONFIG['SEED'], voting='soft', reject_rate=0).fit(X_T_lambda, y_T_lambda)
+        score = f1_score(y_DSEL, clf.predict(X_DSEL), zero_division=0, average='macro')
+        #score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=1, cv=num_cv_folds)
+        return score#.mean()
+
     try:
         metadesr = load_model_by_name(experiment_name=experiment_name, run_name='METADESR')[0]
     except ValueError:
-        metadesr = METADESR(pool_classifiers, random_state=CONFIG['SEED'], voting='soft').fit(X_T_lambda, y_T_lambda)
+        mdesr_study = optuna.create_study(direction='maximize')
+        mdesr_study.optimize(mdesr_objective, n_trials=num_trials)
+        mdesr_params = mdesr_study.best_params
+        meta_clf = RandomForestClassifier(
+            n_estimators=mdesr_params['n_estimators'], max_depth=mdesr_params['max_depth'], criterion=mdesr_params['criterion'],
+            min_samples_split=mdesr_params['min_samples_split'], min_samples_leaf=mdesr_params['min_samples_leaf'],
+            random_state=CONFIG['SEED'], n_jobs=CONFIG['NUM_WORKERS']
+        )
+        metadesr = METADESR(pool_classifiers, meta_classifier=meta_clf, 
+                            k=mdesr_params['k'], Kp=mdesr_params['Kp'], random_state=CONFIG['SEED'], 
+                            n_jobs=1, voting='soft', reject_rate=0).fit(X_T_lambda, y_T_lambda)
         mdesr_params = metadesr.get_params()
         mdesr_params.pop('pool_classifiers')
         log_model_to_mlflow(
             metadesr, "METADESR", mdesr_params,
-            X_DSEL, y_DSEL, X_G, y_G
+            X_T_lambda, y_T_lambda, X_G, y_G
         )
 
     if(load):
