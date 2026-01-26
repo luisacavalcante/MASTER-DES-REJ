@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from tqdm import tqdm
 from train_models import CONFIG, load_model_by_name
+from classes import Pool, METADESR
 from sklearn.metrics import (accuracy_score, 
                              precision_score, 
                              recall_score, 
@@ -65,32 +66,39 @@ def rejection_overhall(rejector, x, y, rej_rates, methods=['avg','median','min',
     return results_log, rejection_history
 
 from itertools import product 
-def rejection_overhall_metades(model, x, y, rej_thresholds, selection_thresholds:list[float]=[0.5]):
-    results_log = pd.DataFrame(columns=['Rejection Rate','BM Selection Rate','Accuracy','Precision','Recall','F1-Score'])
-    #rejection_history = pd.DataFrame(columns=['idx','Rejection Rate','BM Selection Rate'])
-    
-    rej_thresholds = np.asarray(rej_thresholds)
-    if(any(rej_thresholds<0) or any(rej_thresholds>1)):
+def rejection_threshold_overhall(rejector, x, y, thresholds:list[float]=[0.5], methods=['avg','median','min','max']):
+    # Vale para Pool com rejeição e METADES-R
+    if(isinstance(rejector, METADESR)):
+        threshold_type = 'Selection Threshold'
+        def predict_func(method, threshold):
+            rejector.set_predict_params(rejection_method=method, selection_threshold=threshold)
+            return rejector.predict(x)
+    elif(isinstance(rejector, Pool)):
+        threshold_type = 'Rejection Threshold'
+        def predict_func(method, threshold):
+            return rejector.reject_threshold_predict(x,
+                                                     reject_threshold=threshold,
+                                                     reject_method=method,
+                                                     warnings=False)
+
+    results_log = pd.DataFrame(columns=['Method',threshold_type,'Rejection Rate','Accuracy','Precision','Recall','F1-Score'])
+    thresholds = np.asarray(thresholds)
+    if(any(thresholds<0) or any(thresholds>1)):
         raise ValueError("Apenas valores entre 0 e 1")
-    if(rej_thresholds.max() != 1):
-        rej_thresholds = np.append(rej_thresholds, [1])
+    if(thresholds.min() != 0):
+        thresholds = np.append(thresholds, [0])
     if(isinstance(y, pd.DataFrame) or isinstance(y, pd.Series)):
         y = y.values
-    total_iterations = len(selection_thresholds) * len(rej_thresholds)
-
+    
+    thresholds.sort()
+    total_iterations = len(methods) * len(thresholds)
     with tqdm(total=total_iterations, desc="Processing") as pbar:
-        for rej_thresh, sel_thresh in product(rej_thresholds, selection_thresholds):
-            model.set_thresholds(rejection_threshold=rej_thresh, selection_threshold=sel_thresh)
-            y_pred = model.predict(x)
-            idx = ~np.isnan(y_pred)#.index
+        for method, threshold in product(methods, thresholds):
             
-            #idx_rej = y_pred[y_pred.isna()].index
-            #rejected = rejection_history.loc[rejection_history['Method']==method,'idx']
-            #idx_rej = list(set(idx_rej) - set(rejected))
-            #for i in range(len(idx_rej)):
-            #    rejection_history.loc[rejection_history.shape[0],:] = [idx_rej[i], method, reject_rate]
-            
-            if(len(idx)>0):
+            y_pred = predict_func(method, threshold)
+            idx = ~y_pred.mask
+                        
+            if(any(idx)):
                 acc = accuracy_score(y[idx], y_pred[idx])
                 if(len(set(y))>2):
                     pre = precision_score(y[idx], y_pred[idx], zero_division=0, average='macro')
@@ -100,13 +108,13 @@ def rejection_overhall_metades(model, x, y, rej_thresholds, selection_thresholds
                     pre = precision_score(y[idx], y_pred[idx], zero_division=0)
                     rec = recall_score(y[idx], y_pred[idx], zero_division=0)
                     f1s = f1_score(y[idx], y_pred[idx], zero_division=0)
-                rej_rate = (~idx).sum()/len(y)
-                results_log.loc[results_log.shape[0]] = [rej_rate,sel_thresh,acc,pre,rec,f1s]
+                rej_rate = 1-((idx).sum()/len(y))
+                results_log.loc[results_log.shape[0]] = [method,threshold,rej_rate,acc,pre,rec,f1s]
                 
-            pbar.set_postfix({'Rejection by Uncertainty': f'{rej_thresh:.2f}', 'Selection by Competence': f'{sel_thresh:.2f}'})
+            pbar.set_postfix({'Method': f'{method}', threshold_type: f'{threshold:.2f}'})
             pbar.update(1)
 
-    return results_log#, rejection_history
+    return results_log
 
 def rejection_overhall_metadesr(model, x, y, reject_rates, selection_thresholds:list[float]=[0.5], methods=['avg','median','min','max']):
     results_log = pd.DataFrame(columns=['Rejection Rate','BM Selection Threshold','Method','Accuracy','Precision','Recall','F1-Score'])

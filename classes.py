@@ -2,6 +2,7 @@ import pandas as pd
 import numpy as np
 from math import floor
 from deslib.des import METADES as MetaDES
+from deslib.des import BaseDES
 from scipy import stats as st
 from sklearn.pipeline import NotFittedError
 from sklearn.preprocessing import StandardScaler
@@ -71,11 +72,10 @@ class Pool:
         return self
 
     def predict(self, X) -> pd.DataFrame:
-        pred = pd.DataFrame(columns=list(self.predictors.keys()))
-        
         if((self.cache_input_pred is not None) and (X.shape == self.cache_input_pred.shape) and (X == self.cache_input_pred).all().all()):
             pred = self.cache_output_pred
         else:
+            pred = pd.DataFrame(columns=list(self.predictors.keys()))
             for name, model in self.predictors.items():
                 pred[name] = model.predict(X)
             self.cache_input_pred = X
@@ -83,18 +83,30 @@ class Pool:
             
         return pred
 
-    def predict_proba(self, X) -> dict:
-        pred = {}
-        
+    def predict_proba(self, X) -> np.ndarray[np.ndarray]:
         if((self.cache_input_proba is not None) and (X.shape == self.cache_input_proba.shape) and (X == self.cache_input_proba).all().all()):
             pred = self.cache_output_proba
         else:
-            for name, model in self.predictors.items():
-                pred[name] = model.predict_proba(X)
+            pred = []
+            for model in self.predictors.values():
+                pred.append(model.predict_proba(X))
+            pred = np.asarray(pred)
             self.cache_input_proba = X
             self.cache_output_proba = pred
 
         return pred
+    
+    @staticmethod
+    def _mask_proba(probabilities, selection_array, axis):
+        # Broadcast the selected classifiers mask
+        # to cover the last axis (n_classes):
+        selection_array = np.expand_dims(selection_array,
+                                         axis=axis)
+        selection_array = np.broadcast_to(selection_array,
+                                          probabilities.shape)
+        masked_proba = np.ma.MaskedArray(probabilities,
+                                         selection_array)
+        return masked_proba
     
     def drop(self, *args):
         new_models = {}
@@ -155,54 +167,50 @@ class Pool:
 
         return predictions[0]
 
-    def reject_threshold_predict(self, X, reject_threshold, reject_method:str='avg', assessor=None, warnings:bool=True):
+    def reject_threshold_predict(self, X, reject_threshold, reject_method:str='avg', warnings:bool=True):
         # reject_method deve ser igual a 'avg', 'median', 'min' ou 'max'
-        if(reject_method not in ['avg', 'mean', 'median', 'min','max', 'assessor']):
+        if(reject_method not in ['avg', 'mean', 'median', 'min','max']):
             raise ValueError("reject_method deve ser igual a 'avg', 'mean, 'median', 'min' ou 'max'")
         
-        #if(assessor is None):
-        poolProb = pd.DataFrame()
-        predictions = pd.DataFrame()
         results = self.predict_proba(X)
-
-        for name, probas in results.items():
-            poolProb[name] = 1 - np.max(probas, axis=1)
-
-        predictions = pd.DataFrame(np.array(st.mode(predictions.values, axis=1))[0])
-
-        match reject_method:
-            case 'max':
-                predictions['score'] = poolProb.apply(lambda x: max(x), axis=1)
-            case 'median':
-                predictions['score'] = poolProb.apply(lambda x: np.median(x), axis=1)
-            case 'min':
-                predictions['score'] = poolProb.apply(lambda x: min(x), axis=1)
-            case _: #avg or mean
-                predictions['score'] = poolProb.apply(lambda x: np.mean(x), axis=1)
-            # Vou deixar assim mesmo só para ficar mais fácil de adicionar outros métodos depois
-        
-        # TODO: Parte do assessor como DES
-        #else:
-        #    poolProb = pd.DataFrame(assessor.predict(X), columns=list(self.predictors.keys()))
 
         if(reject_threshold > 1):
             reject_threshold = reject_threshold/100
+
+        # PRÉ-REJEIÇÕES
+        poolProb = 1 - np.max(results, axis=2)
+
+        # REJEIÇÃO DE INSTÂNCIAS
+        match reject_method:
+            case 'max':
+                unc_score = np.max(poolProb, axis=0) #poolProb.apply(lambda x: max(x), axis=1)
+            case 'median':
+                unc_score = np.median(poolProb, axis=0) #poolProb.apply(lambda x: np.median(x), axis=1)
+            case 'min':
+                unc_score = np.min(poolProb, axis=0) #poolProb.apply(lambda x: min(x), axis=1)
+            case _: #avg or mean
+                unc_score = np.mean(poolProb, axis=0) #poolProb.apply(lambda x: np.mean(x), axis=1)
+            # Vou deixar assim mesmo só para ficar mais fácil de adicionar outros métodos depois
 
         # No survey de reject option, uma instância era rejeitada se:
         #         =>      confiança < rejection threshold
         # Ou seja, como confiança é igual a 1-incerteza, ent o novo critério de rejeição seria:
         #         =>      incerteza > rejection threshold
         # O que tecnicamente poderia ser considerado um threshold de aceitação em ambos os casos, mas enfim né
-        predictions.loc[predictions['score']>reject_threshold,:] = np.nan
-        predictions = predictions.drop(columns=['score'])
-        
-        if(warnings):
-            if(predictions.iloc[:,0].notna().all()):
-                print('Warning: Number of rejections equals 0. Increase the rejection threshold.')
-            elif(predictions.iloc[:,0].isna().all()):
-                print('Warning: All examples will be rejected. Decrease the rejection threshold.')
 
-        return predictions[0]
+        # REJEIÇÃO DE MODELOS
+        results = self._mask_proba(results, poolProb>reject_threshold, axis=2)
+
+        # RESULTADO FINAL
+        results = np.ma.MaskedArray(np.argmax(np.mean(results, axis=0), axis=1), mask=unc_score>reject_threshold)
+
+        if(warnings):
+            if(all(~results.mask)):
+                print('Warning: Number of rejections equals 0. Decrease the rejection threshold.')
+            elif(all(results.mask)):
+                print('Warning: All examples will be rejected. Increase the rejection threshold.')
+
+        return results
 
 # TODO
 class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
@@ -342,11 +350,10 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
     Information Fusion, vol. 41, pp. 195 – 216, 2018.
 
     """
-    def __init__(self, pool_classifiers=None, meta_classifier=None, k=7, Kp=5, Hc=1, selection_threshold=0.5, rejection_threshold=0.5,  DFP=False, with_IH=False, safe_k=None, IH_rate=0.3, random_state=None, knn_classifier='knn', knne=False, knn_metric='minkowski', DSEL_perc=0.5, n_jobs=-1, voting='soft', rejection_method='median', reject_rate=0):
-        super().__init__(pool_classifiers, meta_classifier, k, Kp, Hc, selection_threshold, 'selection', DFP, with_IH, safe_k, IH_rate, random_state, knn_classifier, knne, knn_metric, DSEL_perc, n_jobs, voting)
+    def __init__(self, pool_classifiers=None, meta_classifier=None, k=7, Kp=5, Hc=1, selection_threshold=0.5,  DFP=False, with_IH=False, safe_k=None, IH_rate=0.3, random_state=None, knn_classifier='knn', knne=False, knn_metric='minkowski', DSEL_perc=0.5, n_jobs=-1, voting='soft', rejection_method='median'):
+        super().__init__(pool_classifiers, meta_classifier, k, Kp, Hc, 0.6, 'selection', DFP, with_IH, safe_k, IH_rate, random_state, knn_classifier, knne, knn_metric, DSEL_perc, n_jobs, voting)
         self.rejection_method = rejection_method
-        self.rejection_threshold = rejection_threshold
-        self.reject_rate = reject_rate
+        self.selection_threshold = selection_threshold
 
     def _validate_parameters(self):
         """Check if the parameters passed as argument are correct.
@@ -393,7 +400,7 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
         else:
             raise ValueError("Parameter Kp is 'None'.")
 
-        super()._validate_parameters()
+        super(MetaDES, self)._validate_parameters()
 
     def predict(self, X):
         """Predict the class label for each sample in X.
@@ -411,11 +418,10 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
         probas = self.predict_proba(X)
         preds = probas.argmax(axis=1).astype(float)
         # Rejected by uncertainty
-        subgroup_mask = np.isnan(probas[:,0]) # Sempre que uma instância for rejeitada, todas as probabilidades de classe serão np.nan
-        preds[subgroup_mask] = np.nan
+        subgroup_mask = probas.mask[:,0] # Sempre que uma instância for rejeitada, todas as probabilidades de classe serão np.nan
         # Accepted
-        subgroup_mask = ~subgroup_mask
-        preds[subgroup_mask] = self.classes_.take(preds[subgroup_mask].astype(int))
+        preds[~subgroup_mask] = self.classes_.take(preds[~subgroup_mask].astype(int))
+        preds = np.ma.MaskedArray(preds, mask=subgroup_mask)
         return preds
 
     def predict_proba(self, X):
@@ -450,11 +456,11 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
                 inds, sel_preds, sel_probas = self._prepare_indices_DS(
                     base_preds, base_probas, ind_disagreement,
                     ind_ds_classifier)
-                probas_ds = self.predict_proba_with_ds(sel_preds,
+                probas = self.predict_proba_with_ds(sel_preds,
                                                        sel_probas,
                                                        neighbors, distances,
                                                        DFP_mask)
-                probas[inds] = probas_ds
+                #probas[inds] = probas_ds
 
         # Rejection by uncertainty
         #rej_indices = (1 - probas.max(axis=1)) > self.rejection_threshold
@@ -546,18 +552,18 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
                 competences = np.mean(competences, axis=1)
 
         #selected_instances = np.zeros(competences.shape, dtype=bool)
-        k = int(self.reject_rate*len(competences))
-        selected_instances_idx = np.argsort(competences)[:k]
+        #k = int(self.reject_rate*len(competences))
+        selected_instances = (competences > self.selection_threshold)
         
         # For the rows that are all False (i.e., no base classifier was
         # selected, select all classifiers (all True)
         selected_classifiers[~np.any(selected_classifiers, axis=1), :] = True # < Ligado
 
-        return selected_classifiers, selected_instances_idx
+        return selected_classifiers, selected_instances
     
     def _dynamic_selection(self, competences, predictions, probabilities):
         """ Combine models using dynamic ensemble selection. """
-        selected_classifiers, selected_instances_idx = self.select(competences)
+        selected_classifiers, selected_instances = self.select(competences)
         if self.voting == 'hard':
             votes = np.ma.MaskedArray(predictions, ~selected_classifiers)
             votes = sum_votes_per_class(votes, self.n_classes_)
@@ -576,9 +582,12 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
             #        predicted_proba = np.mean(masked_proba, axis=1)
             predicted_proba = np.mean(masked_proba, axis=1)
             #rejection_mask = np.zeros(predicted_proba.shape, dtype=bool)
-            #rejection_mask[selected_instances_idx] = [True]*predicted_proba.shape[1]
+            #rejection_mask[selected_instances] = [True]*predicted_proba.shape[1]
             #predicted_proba.mask |= rejection_mask
-            predicted_proba[selected_instances_idx] = np.nan
+            predicted_proba = self._mask_proba(predicted_proba, 
+                                               selected_instances, 
+                                               axis=1)
+
         return predicted_proba
     
     def _hybrid(self, competences, predictions, probabilities):
@@ -596,9 +605,21 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
                 masked_proba, competences)
             predicted_proba = np.ma.MaskedArray(predicted_proba, ~selected_instances)
         return predicted_proba
-    
-    def set_thresholds(self, rejection_threshold:float=None, selection_threshold:float=None):
-        if(rejection_threshold is not None):
-            self.rejection_threshold = rejection_threshold
-        if(selection_threshold is not None):
+
+    def set_predict_params(self, selection_threshold=None, rejection_method=None):
+        if(not(selection_threshold is None)):
             self.selection_threshold = selection_threshold
+        if(not(rejection_method is None)):
+            self.rejection_method = rejection_method
+
+    @staticmethod
+    def _mask_proba(probabilities, selection_array, axis=2):
+        # Broadcast the selected classifiers mask
+        # to cover the last axis (n_classes):
+        selection_array = np.expand_dims(selection_array,
+                                         axis=axis)
+        selection_array = np.broadcast_to(selection_array,
+                                          probabilities.shape)
+        masked_proba = np.ma.MaskedArray(probabilities,
+                                         ~selection_array)
+        return masked_proba

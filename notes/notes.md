@@ -1,3 +1,11 @@
+# 23/01
+
+**Modificações para o plugin e o METADES-R**
+
+- Mudar o METADES-R e plugin de volta para rejection via threshold, ao invés de reject rate
+- Quando todos os modelos forem classificados como não-competentes, rejeitar a instância (ou não, provavelmente não vai fazer muita diferença no final)
+- Pool/Plugin agora também terá seleção dinâmica dos modelos
+![alt text](esquema_2.jpeg)
 
 # 10/12
 
