@@ -61,7 +61,7 @@ def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test
     Treina, avalia e registra um modelo no MLflow.
     """
     if(model_name=='METADESR'):
-        model.set_thresholds(1,0)
+        model.set_predict_params(rejection_rate=0.0, selection_threshold=0.0)
     
     with mlflow.start_run(run_name=model_name):
         y_pred_train = model.predict(X_train)
@@ -996,8 +996,9 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             random_state=CONFIG['SEED'], n_jobs=CONFIG['NUM_WORKERS']
         )
 
-        clf = METADESR(pool_classifiers, meta_classifier=meta_clf, k=k, Kp=kp, random_state=CONFIG['SEED'], voting='soft', reject_rate=0).fit(X_T_lambda, y_T_lambda)
-        score = f1_score(y_DSEL, clf.predict(X_DSEL), zero_division=0, average='macro')
+        clf = METADESR(pool_classifiers, meta_classifier=meta_clf, k=k, Kp=kp, random_state=CONFIG['SEED'], voting='soft', selection_threshold=0.5, rejection_rate=0.0).fit(X_T_lambda, y_T_lambda)
+        y_pred = clf.predict(X_DSEL)
+        score = f1_score(y_DSEL[~y_pred.mask], y_pred[~y_pred.mask], zero_division=0, average='macro')
         #score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=1, cv=num_cv_folds)
         return score#.mean()
 
@@ -1014,7 +1015,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         )
         metadesr = METADESR(pool_classifiers, meta_classifier=meta_clf, 
                             k=mdesr_params['k'], Kp=mdesr_params['Kp'], random_state=CONFIG['SEED'], 
-                            n_jobs=1, voting='soft', reject_rate=0).fit(X_T_lambda, y_T_lambda)
+                            n_jobs=1, voting='soft', selection_threshold=0.0, rejection_rate=0.0).fit(X_T_lambda, y_T_lambda)
         mdesr_params = metadesr.get_params()
         mdesr_params.pop('pool_classifiers')
         log_model_to_mlflow(

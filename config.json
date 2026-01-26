@@ -1,7 +1,7 @@
 {
     "SEED": 1246495320,
     "VERSION": "v5",
-    "NUM_WORKERS": -1,
+    "NUM_WORKERS": 2,
     "TWO_MOONS": {
         "N_SAMPLES": 10000,
         "NOISE": 0.22
