@@ -61,7 +61,7 @@ def log_model_to_mlflow(model, model_name, hyperparams, X_train, y_train, X_test
     Treina, avalia e registra um modelo no MLflow.
     """
     if(model_name=='METADESR'):
-        model.set_predict_params(rejection_rate=0.0, selection_threshold=0.0)
+        model.set_predict_params(rejection_rate=0.0)
     
     with mlflow.start_run(run_name=model_name):
         y_pred_train = model.predict(X_train)
@@ -969,16 +969,16 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
     # METADES - treina em T_lambda (meta-treinamento) e valida em DSEL
     pool_classifiers = list(loaded_models.values())
 
-    try:
-        metades = load_model_by_name(experiment_name=experiment_name, run_name='METADES')[0]
-    except ValueError:
-        metades = METADES(pool_classifiers, random_state=CONFIG['SEED'], voting='soft').fit(X_T_lambda, y_T_lambda)
-        mdes_params = metades.get_params()
-        mdes_params.pop('pool_classifiers')
-        log_model_to_mlflow(
-            metades, "METADES", mdes_params,
-            X_DSEL, y_DSEL, X_G, y_G
-        )
+    #try:
+    #    metades = load_model_by_name(experiment_name=experiment_name, run_name='METADES')[0]
+    #except ValueError:
+    #    metades = METADES(pool_classifiers, random_state=CONFIG['SEED'], voting='soft').fit(X_T_lambda, y_T_lambda)
+    #    mdes_params = metades.get_params()
+    #    mdes_params.pop('pool_classifiers')
+    #    log_model_to_mlflow(
+    #        metades, "METADES", mdes_params,
+    #        X_DSEL, y_DSEL, X_G, y_G
+    #    )
 
     def mdesr_objective(trial):
         k = trial.suggest_int('k', 3, 25, log=True)
@@ -996,7 +996,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
             random_state=CONFIG['SEED'], n_jobs=CONFIG['NUM_WORKERS']
         )
 
-        clf = METADESR(pool_classifiers, meta_classifier=meta_clf, k=k, Kp=kp, random_state=CONFIG['SEED'], voting='soft', selection_threshold=0.5, rejection_rate=0.0).fit(X_T_lambda, y_T_lambda)
+        clf = METADESR(pool_classifiers, meta_classifier=meta_clf, k=k, Kp=kp, random_state=CONFIG['SEED'], voting='soft', rejection_rate=0.0).fit(X_T_lambda, y_T_lambda)
         y_pred = clf.predict(X_DSEL)
         score = f1_score(y_DSEL[~y_pred.mask], y_pred[~y_pred.mask], zero_division=0, average='macro')
         #score = cross_val_score(clf, X_T, y_T, scoring=scorer_string, n_jobs=1, cv=num_cv_folds)
@@ -1015,7 +1015,7 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
         )
         metadesr = METADESR(pool_classifiers, meta_classifier=meta_clf, 
                             k=mdesr_params['k'], Kp=mdesr_params['Kp'], random_state=CONFIG['SEED'], 
-                            n_jobs=1, voting='soft', selection_threshold=0.0, rejection_rate=0.0).fit(X_T_lambda, y_T_lambda)
+                            n_jobs=1, voting='soft', rejection_rate=0.0).fit(X_T_lambda, y_T_lambda)
         mdesr_params = metadesr.get_params()
         mdesr_params.pop('pool_classifiers')
         log_model_to_mlflow(
@@ -1026,9 +1026,74 @@ def searchAndTrain(dataset, experiment_name, num_trials, load=False):
     if(load):
         return {
             'pool_classifiers': loaded_models, 
-            'METADES': metades, 
+            #'METADES': metades, 
             'METADESR': metadesr
         }
+
+def migrate_models_to_new_version(dataset_name, old_version):
+    """
+    Migra modelos de uma versão anterior para a nova versão do CONFIG.
+    
+    Args:
+        dataset_name: Nome do dataset (ex: 'adult', 'qsar', etc.)
+        old_version: Versão antiga do experimento
+    
+    Returns:
+        dict: Dicionário com os modelos migrados
+    """
+        
+    # Nome do experimento antigo
+    dataset_clean = re.sub('[-_ ]', '', dataset_name).lower()
+    old_experiment_name = f"{dataset_clean}_{old_version}_{CONFIG['SEED']}"
+    
+    # Nome do novo experimento
+    new_experiment_name = f"{dataset_clean}_{CONFIG['VERSION']}_{CONFIG['SEED']}"
+    
+    # Criar novo experimento
+    mlflow.set_experiment(experiment_name=new_experiment_name)
+    
+    # Lista de modelos para migrar (excluindo METADES e METADESR)
+    model_names = [
+        'Decision_Tree',
+        'SGD',
+        'Logistic_Regression',
+        'KNN',
+        'SVM_Linear',
+        'SVM_Polynomial',
+        'SVM_RBF',
+        'MLP',
+        'Random_Forest',
+        'Gradient_Boosting',
+        'AdaBoost',
+        'XGBoost'
+    ]
+        
+    # Carregar dados para avaliar os modelos
+    X_T, _, _, X_G, y_T, _, _, y_G, _ = get_data(dataset_name)
+    
+    for model_name in model_names:
+        # Carregar modelo da versão antiga
+        model, run_info = load_model_by_name(
+            experiment_name=old_experiment_name,
+            run_name=model_name
+        )
+        
+        # Extrair hiperparâmetros
+        hyperparams = run_info['params']
+        
+        # Registrar no novo experimento
+        log_model_to_mlflow(
+            model=model,
+            model_name=model_name,
+            hyperparams=hyperparams,
+            X_train=X_T,
+            y_train=y_T,
+            X_test=X_G,
+            y_test=y_G
+        )
+                    
+    print(f"Migração concluída: [{dataset_clean}_vx_{CONFIG['SEED']}]   {old_version}->{CONFIG['VERSION']}")
+
 
 def getExpName(dataset):
     global CONFIG
@@ -1043,3 +1108,5 @@ if(__name__=='__main__'):
         searchAndTrain(dataset=DATASET, 
                     experiment_name=experiment_name, 
                     num_trials=NUM_TRIALS)
+
+        #migrate_models_to_new_version(DATASET, 'v5')

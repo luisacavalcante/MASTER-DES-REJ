@@ -105,7 +105,7 @@ class Pool:
         selection_array = np.broadcast_to(selection_array,
                                           probabilities.shape)
         masked_proba = np.ma.MaskedArray(probabilities,
-                                         selection_array)
+                                         ~selection_array)
         return masked_proba
     
     def drop(self, *args):
@@ -127,60 +127,19 @@ class Pool:
                     
         return newPool
 
-    def reject_rate_predict(self, X, reject_rate, reject_method:str='avg', warnings:bool=True):
-        # reject_method deve ser igual a 'avg', 'median', 'min' ou 'max'
-        if(reject_method not in ['avg', 'mean', 'median', 'min','max']):
-            raise ValueError("reject_method deve ser igual a 'avg', 'mean, 'median', 'min' ou 'max'")
-        
-        poolProb = pd.DataFrame()
-        predictions = self.predict(X)
-        proba_results = self.predict_proba(X)
-
-        for name, probas in proba_results.items():
-            poolProb[name] = 1 - np.max(probas, axis=1)
-
-        predictions = pd.DataFrame(np.array(st.mode(predictions.values, axis=1))[0])
-
-        match reject_method:
-            case 'max':
-                predictions['score'] = poolProb.apply(lambda x: max(x), axis=1)
-            case 'median':
-                predictions['score'] = poolProb.apply(lambda x: np.median(x), axis=1)
-            case 'min':
-                predictions['score'] = poolProb.apply(lambda x: min(x), axis=1)
-            case _: #avg or mean
-                predictions['score'] = poolProb.apply(lambda x: np.mean(x), axis=1)
-
-        if(reject_rate > 1):
-            reject_rate = reject_rate/100
-
-        n_reject = floor(poolProb.shape[0] * reject_rate)
-        if(warnings):
-            if(n_reject==0):
-                print('Warning: Number of rejections equals 0. Increase the rejection rate.')
-            elif(n_reject==poolProb.shape[0]):
-                print('Warning: All examples will be rejected. Decrease the rejection rate.')
-
-        predictions = predictions.sort_values(by='score', ascending=False)
-        predictions.iloc[:n_reject, :] = np.nan # REJECTED
-        predictions = predictions.drop(columns=['score']).sort_index()
-
-        return predictions[0]
-
-    def reject_predict(self, X, reject_rate, reject_threshold, reject_method:str='avg', warnings:bool=True):
+    def reject_predict(self, X, reject_rate, reject_method:str='avg', warnings:bool=True):
         # reject_method deve ser igual a 'avg', 'median', 'min' ou 'max'
         if(reject_method not in ['avg', 'mean', 'median', 'min','max']):
             raise ValueError("reject_method deve ser igual a 'avg', 'mean, 'median', 'min' ou 'max'")
         
         results = self.predict_proba(X)
 
-        if(reject_threshold > 1):
-            reject_threshold = reject_threshold/100
         if(reject_rate > 1):
             reject_rate = reject_rate/100
 
         # PRÉ-REJEIÇÕES
         poolProb = 1 - np.max(results, axis=2)
+        mean_unc = np.mean(poolProb, axis=0)
 
         # REJEIÇÃO DE INSTÂNCIAS
         match reject_method:
@@ -191,7 +150,7 @@ class Pool:
             case 'min':
                 unc_score = np.min(poolProb, axis=0) #poolProb.apply(lambda x: min(x), axis=1)
             case _: #avg or mean
-                unc_score = np.mean(poolProb, axis=0) #poolProb.apply(lambda x: np.mean(x), axis=1)
+                unc_score = mean_unc #poolProb.apply(lambda x: np.mean(x), axis=1)
             # Vou deixar assim mesmo só para ficar mais fácil de adicionar outros métodos depois
 
         k = int(reject_rate*len(unc_score))
@@ -200,14 +159,11 @@ class Pool:
         if(k!=0):
             rejected_instances[rejected_idx] = True
 
-        # No survey de reject option, uma instância era rejeitada se:
-        #         =>      confiança < rejection threshold
-        # Ou seja, como confiança é igual a 1-incerteza, ent o novo critério de rejeição seria:
-        #         =>      incerteza > rejection threshold
-        # O que tecnicamente poderia ser considerado um threshold de aceitação em ambos os casos, mas enfim né
-
-        # REJEIÇÃO DE MODELOS
-        results = self._mask_proba(results, poolProb>reject_threshold, axis=2)
+        # SELEÇÃO DE MODELOS
+        # O '<=' vai garantir que nunca vai ocorrer de nenhum modelo ser selecionado, caso todas as competências para uma instância sejam iguais
+        results = self._mask_proba(results, 
+                                   selection_array=poolProb <= np.broadcast_to(np.expand_dims(mean_unc, axis=0), poolProb.shape), 
+                                   axis=2)
 
         # RESULTADO FINAL
         results = np.ma.MaskedArray(np.argmax(np.mean(results, axis=0), axis=1), mask=rejected_instances)
@@ -357,10 +313,10 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
     Information Fusion, vol. 41, pp. 195 – 216, 2018.
 
     """
-    def __init__(self, pool_classifiers=None, meta_classifier=None, k=7, Kp=5, Hc=1, selection_threshold=0.5, rejection_rate=0.0,  DFP=False, with_IH=False, safe_k=None, IH_rate=0.3, random_state=None, knn_classifier='knn', knne=False, knn_metric='minkowski', DSEL_perc=0.5, n_jobs=-1, voting='soft', rejection_method='median'):
-        super().__init__(pool_classifiers, meta_classifier, k, Kp, Hc, 0.6, 'selection', DFP, with_IH, safe_k, IH_rate, random_state, knn_classifier, knne, knn_metric, DSEL_perc, n_jobs, voting)
+    def __init__(self, pool_classifiers=None, meta_classifier=None, k=7, Kp=5, Hc=1, rejection_rate=0.0,  DFP=False, with_IH=False, safe_k=None, IH_rate=0.3, random_state=None, knn_classifier='knn', knne=False, knn_metric='minkowski', DSEL_perc=0.5, n_jobs=-1, voting='soft', rejection_method='median'):
+        super().__init__(pool_classifiers, meta_classifier, k, Kp, Hc, 0.5, 'selection', DFP, with_IH, safe_k, IH_rate, random_state, knn_classifier, knne, knn_metric, DSEL_perc, n_jobs, voting)
         self.rejection_method = rejection_method
-        self.selection_threshold = selection_threshold
+        #self.selection_threshold = selection_threshold
         self.rejection_rate = rejection_rate
 
     def _validate_parameters(self):
@@ -381,10 +337,10 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
                 'Parameter Hc should be higher than 0.5.'
                 ' Currently Hc = {}'.format(self.Hc))
 
-        if not isinstance(self.selection_threshold, float):
-            raise ValueError(
-                'Parameter Hc should be either a float.'
-                ' Currently Hc = {}'.format(type(self.Hc)))
+        #if not isinstance(self.selection_threshold, float):
+        #    raise ValueError(
+        #        'Parameter Hc should be either a float.'
+        #        ' Currently Hc = {}'.format(type(self.Hc)))
 
         # v Qualquer valor válido para selection_threshold
         #if self.selection_threshold < 0.5:
@@ -547,8 +503,10 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
         if competences.ndim < 2:
             competences = competences.reshape(1, -1)
 
-        # Rejection by model competence
-        selected_classifiers = (competences > self.selection_threshold)
+        # Selection by model competence
+        mean_competences = np.mean(competences, axis=1)
+        # O '>=' vai garantir que nunca vai ocorrer de nenhum modelo ser selecionado, caso todas as competências para uma instância sejam iguais
+        selected_classifiers = competences >= np.broadcast_to(np.expand_dims(mean_competences, axis=1), competences.shape)
         match self.rejection_method:
             case 'median':
                 competences = np.median(competences, axis=1)
@@ -557,7 +515,7 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
             case 'min':
                 competences = np.min(competences, axis=1)
             case _:
-                competences = np.mean(competences, axis=1)
+                competences = mean_competences
 
         #selected_instances = np.zeros(competences.shape, dtype=bool)
         k = int(self.rejection_rate*len(competences))
@@ -567,7 +525,7 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
         
         # For the rows that are all False (i.e., no base classifier was
         # selected, select all classifiers (all True)
-        selected_classifiers[~np.any(selected_classifiers, axis=1), :] = True # < Ligado
+        #selected_classifiers[~np.any(selected_classifiers, axis=1), :] = True # < Desligado
 
         return selected_classifiers, selected_instances
     
@@ -616,9 +574,7 @@ class METADESR(MetaDES): # META-DES.Rejector (nome ainda não definido)
             predicted_proba = np.ma.MaskedArray(predicted_proba, ~selected_instances)
         return predicted_proba
 
-    def set_predict_params(self, selection_threshold=None, rejection_rate=None, rejection_method=None):
-        if(not(selection_threshold is None)):
-            self.selection_threshold = selection_threshold
+    def set_predict_params(self, rejection_rate=None, rejection_method=None):
         if(not(rejection_rate is None)):
             self.rejection_rate = rejection_rate
         if(not(rejection_method is None)):

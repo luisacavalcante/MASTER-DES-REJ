@@ -68,43 +68,35 @@ def rejection_rate_overhall(rejector, x, y, rej_rates, methods=['avg','median','
 from itertools import product 
 def rejection_overhall(rejector, x, y, 
                        rates:list[float]=[0.5], 
-                       thresholds:list[float]=[0.5], 
                        methods=['avg','median','min','max']):
     # Vale para Pool com rejeição e METADES-R
     if(isinstance(rejector, METADESR)):
-        threshold_type = 'Selection Threshold'
-        def predict_func(method, rate, threshold):
-            rejector.set_predict_params(rejection_method=method, rejection_rate=rate, selection_threshold=threshold)
+        def predict_func(method, rate):
+            rejector.set_predict_params(rejection_method=method, rejection_rate=rate)
             return rejector.predict(x)
     elif(isinstance(rejector, Pool)):
-        threshold_type = 'Rejection Threshold'
-        def predict_func(method, rate, threshold):
+        def predict_func(method, rate):
             return rejector.reject_predict(x,
                                            reject_rate=rate,
-                                           reject_threshold=threshold,
                                            reject_method=method,
                                            warnings=False)
 
-    results_log = pd.DataFrame(columns=['Method','Rejection Rate',threshold_type,'Accuracy','Precision','Recall','F1-Score'])
+    results_log = pd.DataFrame(columns=['Method','Rejection Rate','Accuracy','Precision','Recall','F1-Score'])
     
     rates = np.asarray(rates)
-    thresholds = np.asarray(thresholds)
-    if(any(thresholds<0) or any(thresholds>1)):
+    if(any(rates<0) or any(rates>1)):
         raise ValueError("Apenas valores entre 0 e 1")
-    if(thresholds.min() != 0):
-        thresholds = np.append(thresholds, [0])
     if(rates.min() != 0):
         rates = np.append(rates, [0])
     if(isinstance(y, pd.DataFrame) or isinstance(y, pd.Series)):
         y = y.values
     
     rates.sort()
-    thresholds.sort()
-    total_iterations = len(rates) * len(methods) * len(thresholds)
+    total_iterations = len(rates) * len(methods)
     with tqdm(total=total_iterations, desc="Processing") as pbar:
-        for method, rate, threshold in product(methods, rates, thresholds):
+        for method, rate in product(methods, rates):
             
-            y_pred = predict_func(method, rate, threshold)
+            y_pred = predict_func(method, rate)
             idx = ~y_pred.mask
                         
             if(any(idx)):
@@ -117,9 +109,9 @@ def rejection_overhall(rejector, x, y,
                     pre = precision_score(y[idx], y_pred[idx], zero_division=0)
                     rec = recall_score(y[idx], y_pred[idx], zero_division=0)
                     f1s = f1_score(y[idx], y_pred[idx], zero_division=0)
-                results_log.loc[results_log.shape[0]] = [method,rate,threshold,acc,pre,rec,f1s]
+                results_log.loc[results_log.shape[0]] = [method,rate,acc,pre,rec,f1s]
                 
-            pbar.set_postfix({'Method': f'{method}', 'Rejection Rate': f'{rate:.2f}', threshold_type: f'{threshold:.2f}'})
+            pbar.set_postfix({'Method': f'{method}', 'Rejection Rate': f'{rate:.2f}'})
             pbar.update(1)
 
     return results_log
