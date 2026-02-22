@@ -58,7 +58,11 @@ ROOT_DIR = Path(__file__).resolve().parent.parent  # raiz do projeto
 
 
 def load_dataset(dataset_cfg: dict, seed: int) -> tuple[pd.DataFrame, pd.Series]:
+    dataset_name = dataset_cfg.get("name", "dataset_sem_nome")
+    print(f"\n[DATASET] Iniciando carregamento: '{dataset_name}'")
+
     if "path" not in dataset_cfg:
+        print("[DATASET] Fonte: sintética (make_classification)")
         X, y = make_classification(
             n_samples=2000,
             n_features=20,
@@ -66,19 +70,21 @@ def load_dataset(dataset_cfg: dict, seed: int) -> tuple[pd.DataFrame, pd.Series]
             n_redundant=2,
             random_state=seed,
         )
+        print(f"[DATASET] Concluído: X={X.shape}, y={y.shape}")
         return pd.DataFrame(X), pd.Series(y)
-    print(dataset_cfg["path"])
+    print(f"[DATASET] Fonte: arquivo CSV -> {dataset_cfg['path']}")
     df = pd.read_csv(
         dataset_cfg["path"],
         sep=None,
         engine="python"
     )
     df.columns = df.columns.str.strip()
-    print(df.columns)
     target_col = dataset_cfg["target"]
-    print(target_col)
+    print(f"[DATASET] Colunas ({len(df.columns)}): {list(df.columns)}")
+    print(f"[DATASET] Coluna alvo: {target_col}")
     y = df[target_col]
     X = df.drop(columns=[target_col])
+    print(f"[DATASET] Concluído: X={X.shape}, y={y.shape}")
     return X, y
 
 
@@ -113,7 +119,11 @@ def metrics_with_reject(y_true: np.ndarray, y_pred: np.ndarray, reject_mask: np.
 
 def run_single_dataset(dataset_cfg: dict, cfg: dict) -> list[dict]:
     seed = cfg["seed"]
+    dataset_name = dataset_cfg.get("name", "dataset_sem_nome")
+    print(f"\n[ETAPA 1/6] Preparando dataset '{dataset_name}'")
     X, y = load_dataset(dataset_cfg, seed)
+
+    print(f"[ETAPA 2/6] Split treino/teste (test_size={cfg['test_size']}, seed={seed})")
     X_train, X_test, y_train, y_test = train_test_split(
         X,
         y,
@@ -121,17 +131,23 @@ def run_single_dataset(dataset_cfg: dict, cfg: dict) -> list[dict]:
         random_state=seed,
         stratify=y,
     )
+    print(f"[ETAPA 2/6] Tamanhos -> treino={X_train.shape}, teste={X_test.shape}")
 
+    print("[ETAPA 3/6] Construindo pré-processador")
     preprocessor = build_preprocessor(X_train)
     library = []
+    print("[ETAPA 4/6] Treinando biblioteca de modelos base")
     for name, model in BASE_MODEL_LIBRARY:
+        print(f"  - Treinando modelo: {name}")
         pipe = Pipeline(steps=[("prep", preprocessor), ("clf", clone(model))])
         pipe.fit(X_train, y_train)
         library.append((name, pipe))
 
     results = []
 
+    print("[ETAPA 5/6] Avaliando ensembles e estratégias de rejeição")
     for ensemble_size in cfg["ensemble_sizes"]:
+        print(f"  - Ensemble size: {ensemble_size}")
         selected_models = library[: min(ensemble_size, len(library))]
 
         # 1) Ensemble simples: média das probabilidades
@@ -153,6 +169,7 @@ def run_single_dataset(dataset_cfg: dict, cfg: dict) -> list[dict]:
         pred_plugin = plugin_pool.predict(X_test).mode(axis=1).iloc[:, 0].to_numpy()
 
         for reject_rate in cfg["reject_rates"]:
+            print(f"    · reject_rate alvo: {reject_rate}")
             reject_simple = reject_from_proba(proba_mean, reject_rate)
 
             maj_as_proba = np.stack([model.predict_proba(X_test) for _, model in selected_models], axis=0).mean(axis=0)
@@ -175,6 +192,7 @@ def run_single_dataset(dataset_cfg: dict, cfg: dict) -> list[dict]:
                 row.update(metrics_with_reject(np.asarray(y_test), pred, reject_mask))
                 results.append(row)
 
+    print(f"[ETAPA 6/6] Dataset '{dataset_name}' finalizado com {len(results)} linhas de resultado")
     return results
 
 
@@ -185,6 +203,9 @@ def main():
 
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = json.load(f)
+
+    print(f"[INÍCIO] Configuração carregada de: {args.config}")
+    print(f"[INÍCIO] Datasets na execução: {[d.get('name', 'dataset_sem_nome') for d in cfg['datasets']]}")
 
     all_rows = []
 
