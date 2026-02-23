@@ -189,6 +189,24 @@ def run_single_dataset(dataset_cfg: dict, cfg: dict) -> list[dict]:
 
     results = []
 
+    print("[ETAPA 5/6] Avaliando modelos base (individualmente)")
+    for model_name, model in library:
+        pred_base = model.predict(X_test)
+        base_metrics = metrics_no_reject(np.asarray(y_test), pred_base)
+        print(
+            "  - "
+            f"Modelo base: {model_name:<18} "
+            f"accuracy={base_metrics['accuracy']:.4f} "
+            f"f1_macro={base_metrics['f1_macro']:.4f}"
+        )
+        row = {
+            "dataset": dataset_cfg["name"],
+            "method": f"base_{model_name}",
+            "ensemble_size": 1,
+        }
+        row.update(base_metrics)
+        results.append(row)
+
     print("[ETAPA 5/6] Avaliando ensembles sem rejeição")
     for ensemble_size in cfg["ensemble_sizes"]:
         print(f"  - Ensemble size: {ensemble_size}")
