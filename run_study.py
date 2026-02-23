@@ -11,13 +11,16 @@ from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import accuracy_score, f1_score
+from sklearn.naive_bayes import GaussianNB
 from sklearn.model_selection import train_test_split
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.pipeline import Pipeline
+from sklearn.discriminant_analysis import QuadraticDiscriminantAnalysis
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.neural_network import MLPClassifier
 from sklearn.svm import SVC
 from sklearn.tree import DecisionTreeClassifier
-from classes import Pool
+from sklearn.ensemble import ExtraTreesClassifier, GradientBoostingClassifier
 
 
 BASE_MODEL_LIBRARY = [
@@ -26,6 +29,11 @@ BASE_MODEL_LIBRARY = [
     ("knn", KNeighborsClassifier(n_neighbors=7)),
     ("svc_rbf", SVC(probability=True, kernel="rbf")),
     ("rf", RandomForestClassifier(n_estimators=300, n_jobs=-1)),
+    ("extra_trees", ExtraTreesClassifier(n_estimators=300, n_jobs=-1, random_state=42)),
+    ("gradient_boosting", GradientBoostingClassifier(random_state=42)),
+    ("naive_bayes", GaussianNB()),
+    ("qda", QuadraticDiscriminantAnalysis()),
+    ("mlp", MLPClassifier(hidden_layer_sizes=(64, 32), max_iter=500, random_state=42)),
 ]
 
 
@@ -88,34 +96,70 @@ def load_dataset(dataset_cfg: dict, seed: int) -> tuple[pd.DataFrame, pd.Series]
     return X, y
 
 
-def reject_from_proba(y_proba: np.ndarray, reject_rate: float) -> np.ndarray:
-    confidence = np.max(y_proba, axis=1)
-    k = int(len(confidence) * reject_rate)
-    reject_mask = np.zeros(len(confidence), dtype=bool)
-    if k > 0:
-        idx = np.argsort(confidence)[:k]
-        reject_mask[idx] = True
-    return reject_mask
+def borda_count_prediction(probas: np.ndarray, class_labels: np.ndarray) -> np.ndarray:
+    n_models, n_samples, n_classes = probas.shape
+    borda_scores = np.zeros((n_samples, n_classes), dtype=float)
+
+    for model_idx in range(n_models):
+        model_proba = probas[model_idx]
+        order = np.argsort(model_proba, axis=1)
+
+        model_points = np.zeros_like(model_proba, dtype=float)
+        for rank in range(n_classes):
+            cls_idx = order[:, rank]
+            model_points[np.arange(n_samples), cls_idx] = rank
+
+        borda_scores += model_points
+
+    return class_labels[np.argmax(borda_scores, axis=1)]
 
 
-def metrics_with_reject(y_true: np.ndarray, y_pred: np.ndarray, reject_mask: np.ndarray) -> dict:
-    accepted = ~reject_mask
-    coverage = float(accepted.mean())
-    if accepted.sum() == 0:
-        return {
-            "coverage": coverage,
-            "accuracy_accept": np.nan,
-            "f1_accept": np.nan,
-            "reject_rate_observed": float(reject_mask.mean()),
-        }
-
+def metrics_no_reject(y_true: np.ndarray, y_pred: np.ndarray) -> dict:
     return {
-        "coverage": coverage,
-        "accuracy_accept": float(accuracy_score(y_true[accepted], y_pred[accepted])),
-        "f1_accept": float(f1_score(y_true[accepted], y_pred[accepted], average="macro")),
-        "reject_rate_observed": float(reject_mask.mean()),
+        "accuracy": float(accuracy_score(y_true, y_pred)),
+        "f1_macro": float(f1_score(y_true, y_pred, average="macro")),
     }
 
+
+
+
+def print_dataset_summary(dataset_name: str, rows: list[dict]) -> None:
+    if not rows:
+        print(f"[RESUMO] Dataset '{dataset_name}' sem resultados para imprimir.")
+        return
+
+    df = pd.DataFrame(rows)
+    summary = (
+        df.groupby(["method", "ensemble_size"], as_index=False)
+        .agg(
+            accuracy_mean=("accuracy", "mean"),
+            accuracy_std=("accuracy", "std"),
+            f1_macro_mean=("f1_macro", "mean"),
+            f1_macro_std=("f1_macro", "std"),
+            n_execucoes=("accuracy", "count"),
+        )
+        .sort_values(["accuracy_mean", "f1_macro_mean"], ascending=False)
+    )
+
+    print(f"\n[RESUMO] Dataset '{dataset_name}' - desempenho por método")
+    for _, row in summary.iterrows():
+        acc_std = 0.0 if pd.isna(row["accuracy_std"]) else row["accuracy_std"]
+        f1_std = 0.0 if pd.isna(row["f1_macro_std"]) else row["f1_macro_std"]
+        print(
+            "  - "
+            f"method={row['method']:<18} "
+            f"ensemble_size={int(row['ensemble_size']):<2d} "
+            f"accuracy={row['accuracy_mean']:.4f} ± {acc_std:.4f} "
+            f"f1_macro={row['f1_macro_mean']:.4f} ± {f1_std:.4f} "
+            f"(n={int(row['n_execucoes'])})"
+        )
+
+    best_row = summary.iloc[0]
+    print(
+        "[RESUMO] Melhor método no dataset: "
+        f"{best_row['method']} (ensemble_size={int(best_row['ensemble_size'])}) "
+        f"com accuracy={best_row['accuracy_mean']:.4f} e f1_macro={best_row['f1_macro_mean']:.4f}"
+    )
 
 def run_single_dataset(dataset_cfg: dict, cfg: dict) -> list[dict]:
     seed = cfg["seed"]
@@ -145,54 +189,79 @@ def run_single_dataset(dataset_cfg: dict, cfg: dict) -> list[dict]:
 
     results = []
 
-    print("[ETAPA 5/6] Avaliando ensembles e estratégias de rejeição")
+    print("[ETAPA 5/6] Avaliando ensembles sem rejeição")
     for ensemble_size in cfg["ensemble_sizes"]:
         print(f"  - Ensemble size: {ensemble_size}")
         selected_models = library[: min(ensemble_size, len(library))]
+        model_names = [name for name, _ in selected_models]
+        print(f"    · Modelos usados ({len(model_names)}): {model_names}")
 
-        # 1) Ensemble simples: média das probabilidades
+        # `probas` guarda as probabilidades previstas por cada modelo base.
+        # Formato: (n_modelos, n_amostras, n_classes)
         probas = np.stack([model.predict_proba(X_test) for _, model in selected_models], axis=0)
-        proba_mean = probas.mean(axis=0)
-        class_labels = selected_models[0][1].named_steps["clf"].classes_
-        pred_simple = class_labels[proba_mean.argmax(axis=1)]
 
-        # 2) Combinação majoritária
+        # Mapeamento de índices para rótulos reais das classes.
+        class_labels = selected_models[0][1].named_steps["clf"].classes_
+
+        # `votes` guarda as classes previstas por cada modelo base.
+        # Formato: (n_modelos, n_amostras)
         votes = np.stack([model.predict(X_test) for _, model in selected_models], axis=0)
+
+        # 1) SUM RULE (Soma):
+        # Soma as probabilidades por classe entre os modelos e escolhe a classe com maior soma.
+        pred_sum = class_labels[np.argmax(np.sum(probas, axis=0), axis=1)]
+
+        # 2) PRODUCT RULE (Produto):
+        # Multiplica as probabilidades por classe entre os modelos e escolhe a classe com maior produto.
+        pred_product = class_labels[np.argmax(np.prod(probas, axis=0), axis=1)]
+
+        # 3) MAX RULE (Máximo):
+        # Para cada classe, pega a maior probabilidade atribuída por qualquer modelo.
+        # Em seguida escolhe a classe com maior valor máximo.
+        pred_max = class_labels[np.argmax(np.max(probas, axis=0), axis=1)]
+
+        # 4) MIN RULE (Mínimo):
+        # Para cada classe, pega a menor probabilidade atribuída entre os modelos.
+        # Em seguida escolhe a classe com maior desses mínimos.
+        pred_min = class_labels[np.argmax(np.min(probas, axis=0), axis=1)]
+
+        # 5) MEDIAN RULE (Mediana):
+        # Para cada classe, calcula a mediana das probabilidades entre modelos
+        # e escolhe a classe com maior mediana.
+        pred_median = class_labels[np.argmax(np.median(probas, axis=0), axis=1)]
+
+        # 6) BORDA COUNT:
+        # Converte probabilidades em ranking por modelo e soma pontos de ranking por classe.
+        # A classe com maior pontuação final é selecionada.
+        pred_borda = borda_count_prediction(probas, class_labels)
+
+        # 7) MAJORITY VOTING (Voto majoritário):
+        # Em cada amostra, conta os votos de classe dos modelos e escolhe a classe mais votada.
         pred_majority = []
         for col in votes.T:
             values, counts = np.unique(col, return_counts=True)
             pred_majority.append(values[counts.argmax()])
         pred_majority = np.asarray(pred_majority)
 
-        # 3) Plugin: usa classe Pool já existente
-        plugin_pool = Pool({name: model for name, model in selected_models})
-        pred_plugin = plugin_pool.predict(X_test).mode(axis=1).iloc[:, 0].to_numpy()
-
-        for reject_rate in cfg["reject_rates"]:
-            print(f"    · reject_rate alvo: {reject_rate}")
-            reject_simple = reject_from_proba(proba_mean, reject_rate)
-
-            maj_as_proba = np.stack([model.predict_proba(X_test) for _, model in selected_models], axis=0).mean(axis=0)
-            reject_majority = reject_from_proba(maj_as_proba, reject_rate)
-
-            plugin_proba = np.stack([model.predict_proba(X_test) for _, model in selected_models], axis=0).mean(axis=0)
-            reject_plugin = reject_from_proba(plugin_proba, reject_rate)
-
-            for method_name, pred, reject_mask in [
-                ("ensemble_simples", pred_simple, reject_simple),
-                ("combinacao_majoritaria", pred_majority, reject_majority),
-                ("plugin", pred_plugin, reject_plugin),
-            ]:
-                row = {
-                    "dataset": dataset_cfg["name"],
-                    "method": method_name,
-                    "ensemble_size": ensemble_size,
-                    "reject_rate_target": reject_rate,
-                }
-                row.update(metrics_with_reject(np.asarray(y_test), pred, reject_mask))
-                results.append(row)
+        for method_name, pred in [
+            ("majority_voting", pred_majority),
+            ("sum_rule", pred_sum),
+            ("product_rule", pred_product),
+            ("max_rule", pred_max),
+            ("min_rule", pred_min),
+            ("median_rule", pred_median),
+            ("borda_count", pred_borda),
+        ]:
+            row = {
+                "dataset": dataset_cfg["name"],
+                "method": method_name,
+                "ensemble_size": len(selected_models),
+            }
+            row.update(metrics_no_reject(np.asarray(y_test), pred))
+            results.append(row)
 
     print(f"[ETAPA 6/6] Dataset '{dataset_name}' finalizado com {len(results)} linhas de resultado")
+    print_dataset_summary(dataset_name, results)
     return results
 
 
