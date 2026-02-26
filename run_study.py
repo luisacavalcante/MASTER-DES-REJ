@@ -149,8 +149,8 @@ def print_dataset_summary(dataset_name: str, rows: list[dict]) -> None:
             "  - "
             f"method={row['method']:<18} "
             f"ensemble_size={int(row['ensemble_size']):<2d} "
-            f"accuracy={row['accuracy_mean']:.4f} ± {acc_std:.4f} "
-            f"f1_macro={row['f1_macro_mean']:.4f} ± {f1_std:.4f} "
+            f"accuracy={row['accuracy_mean']:.4f} "
+            f"f1_macro={row['f1_macro_mean']:.4f} "
             f"(n={int(row['n_execucoes'])})"
         )
 
@@ -177,10 +177,10 @@ def run_single_dataset(dataset_cfg: dict, cfg: dict) -> list[dict]:
     )
     print(f"[ETAPA 2/6] Tamanhos -> treino={X_train.shape}, teste={X_test.shape}")
 
-    print("[ETAPA 3/6] Construindo pré-processador")
+    print("[ETAPA 3/6] DATAPREP")
     preprocessor = build_preprocessor(X_train)
     library = []
-    print("[ETAPA 4/6] Treinando biblioteca de modelos base")
+    print("[ETAPA 4/6] Treinando modelos base")
     for name, model in BASE_MODEL_LIBRARY:
         print(f"  - Treinando modelo: {name}")
         pipe = Pipeline(steps=[("prep", preprocessor), ("clf", clone(model))])
@@ -207,7 +207,7 @@ def run_single_dataset(dataset_cfg: dict, cfg: dict) -> list[dict]:
         row.update(base_metrics)
         results.append(row)
 
-    print("[ETAPA 5/6] Avaliando ensembles sem rejeição")
+    print("[ETAPA 5/6] Avaliando ensembles")
     for ensemble_size in cfg["ensemble_sizes"]:
         print(f"  - Ensemble size: {ensemble_size}")
         selected_models = library[: min(ensemble_size, len(library))]
@@ -291,7 +291,7 @@ def main():
     with open(args.config, "r", encoding="utf-8") as f:
         cfg = json.load(f)
 
-    print(f"[INÍCIO] Configuração carregada de: {args.config}")
+   # print(f"[INÍCIO] Configuração carregada de: {args.config}")
     print(f"[INÍCIO] Datasets na execução: {[d.get('name', 'dataset_sem_nome') for d in cfg['datasets']]}")
 
     all_rows = []
@@ -307,3 +307,33 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+'''
+O que fazer agora:
+puxar todos os datasets do artigo DS
+#1 adult https://archive.ics.uci.edu/dataset/2/adult
+#2 blood transfusion https://archive.ics.uci.edu/dataset/176/blood+transfusion+service+center
+#3 breast https://archive.ics.uci.edu/dataset/17/breast+cancer+wisconsin+diagnostic
+#4 cardiotocography https://archive.ics.uci.edu/dataset/193/cardiotocography
+#5 Steel Plates Faults https://archive.ics.uci.edu/dataset/198/steel+plates+faults
+#6 Statlog (German Credit Data) https://archive.ics.uci.edu/dataset/144/statlog+german+credit+data
+#7 Haberman's Survival https://archive.ics.uci.edu/dataset/43/haberman+s+survival
+# Statlog (Heart) https://archive.ics.uci.edu/dataset/145/statlog+heart
+#8 ILPD (Indian Liver Patient Dataset) https://archive.ics.uci.edu/dataset/225/ilpd+indian+liver+patient+dataset
+#9 Ionosphere  https://archive.ics.uci.edu/dataset/52/ionosphere
+#10 Liver Disorders https://archive.ics.uci.edu/dataset/60/liver+disorders
+#11 Magic Gamma Telescope https://archive.ics.uci.edu/dataset/159/magic+gamma+telescope
+#12 Mammographic Mass https://archive.ics.uci.edu/dataset/161/mammographic+mass
+#13 Vertebral Column https://archive.ics.uci.edu/datasets?search=Vertebral+Column
+#14 Wine https://archive.ics.uci.edu/dataset/109/wine
+#15 Parkinsons https://archive.ics.uci.edu/dataset/174/parkinsons
+#16 Credit Card https://archive.ics.uci.edu/dataset/350/default+of+credit+card+clients
+#17 Bank Marketing https://archive.ics.uci.edu/dataset/222/bank+marketing
+#18 Qsar Biodegradation https://archive.ics.uci.edu/dataset/254/qsar+biodegradation
+#19 Sensorless drive diagnosis https://archive.ics.uci.edu/dataset/325/dataset+for+sensorless+drive+diagnosis
+#20 Heart disease https://archive.ics.uci.edu/dataset/45/heart+disease
+fazer tabela:
+DATASETS VS METODOS 
+
+'''
